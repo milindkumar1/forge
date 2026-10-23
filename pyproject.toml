@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "forge-evals"
+version = "0.1.0"
+description = "A small, reproducible evaluation CLI for verifiable tasks"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+forge = "forge.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
