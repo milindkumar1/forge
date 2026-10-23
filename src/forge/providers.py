@@ -27,6 +27,12 @@ class MockProvider:
         if self.mode == "faulty":
             return "incorrect"
         data = json.loads(prompt)
+        if data["operation"] == "tool_episode":
+            for entry in data["trace"]:
+                if entry["event"] == "tool_result":
+                    inventory = json.loads(entry["value"])
+                    return json.dumps({"answer": str(inventory["washers"])})
+            return json.dumps({"tool": "read_fixture", "path": "inventory.json"})
         operation, text = data["operation"], data["text"]
         if operation == "reverse":
             return text[::-1]

@@ -94,8 +94,30 @@ to debug, but cannot evaluate repository edits or tool-use trajectories. Model
 output is always data; nothing calls `eval`, `exec`, or a shell with that output.
 Real coding tasks require a separately designed sandbox before execution.
 
-The next increment can add one bounded tool-use episode over trusted fixture
-files, with explicit tool-call/result traces. This supplies a real trajectory
-boundary without executing model-generated code. A future training pipeline
+`tool_episode.py` adds a separate bounded episode through `forge run-tool`.
+It reuses `complete(prompt) -> str`, asking for a JSON action each turn and
+including the interaction history in subsequent prompts. One trusted
+`read_fixture` operation reads an exact allowlisted name from in-memory data;
+there is no host filesystem access or generated code execution. Three turns
+bound repeated calls; malformed actions stop immediately. Unknown paths produce
+recorded errors so a provider can recover within its remaining budget. Passing
+requires both a successful read and the exact final answer. This checks an
+observable interaction requirement; it cannot prove the model reasoned from
+the tool result rather than memorizing the public fixture.
+
+Tool reports use schema 2 with a versioned fixture snapshot and digest. The
+reader replays saved responses through the same state transitions and compares
+prompts, tool results, termination, answer, verdict, and summary. Oversized
+responses are represented by a null response and an invalid-action event;
+their content is deliberately not preserved. Replay validates internal
+consistency and does not authenticate provider origin. Fixture version 1 is
+fixed in code; a future fixture revision needs an explicit compatibility policy.
+The existing text suite schema and report reader remain supported.
+
+The tradeoff is a small JSON-text action contract versus native provider tool
+calling. Reusing the provider boundary keeps this offline slice small and lets
+the existing adapter participate, but it does not test native function-call
+semantics. A second task is the next step before generalizing the episode runner.
+A future training pipeline
 must use separate task sources and an independently versioned held-out suite
 with an explicit isolation workflow.

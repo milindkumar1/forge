@@ -86,6 +86,44 @@ tests. Different seeds can overlap and share the same templates. They do not
 establish independent training/evaluation splits or demonstrate generalization
 beyond the known mutation checks.
 
+## Run a bounded tool-use episode
+
+```sh
+.venv/bin/forge run-tool
+.venv/bin/forge report --input forge-tool-results.json
+```
+
+`run-tool` reads the same `forge.json` config and defaults to the offline mock.
+It accepts `--config`, `--output`, and the same opt-in `--allow-network` gate as
+`run`. Outputs are never overwritten. Exit codes are `0` for a passing episode,
+`1` for a completed failed episode, and `2` for configuration or file errors.
+
+The public development task asks for the quantity of washers in a small
+inventory. Each provider turn returns JSON requesting
+`{"tool":"read_fixture","path":"inventory.json"}` or a final
+`{"answer":"7"}`. Forge dispatches the single trusted tool against an in-memory
+fixture map. It never opens a provider-supplied path or executes provider code.
+The initial prompt lists the available file and question without its contents
+or expected answer. Subsequent prompts include the recorded interaction history.
+The mock derives its answer from the tool result.
+
+A pass requires a successful read followed by the exact answer within three
+provider turns. Unknown paths produce tool errors and consume a turn; malformed
+actions terminate the episode. Responses over 10,000 characters terminate it
+and are omitted from the trace to bound stored evidence. Provider errors are
+sanitized. `faulty` mock mode emits a malformed action and fails.
+
+Tool reports use schema version `2` and include the versioned fixture snapshot,
+its SHA-256 digest, prompts, responses, tool results/errors, final answer, and
+termination reason. `report` replays recorded responses with the trusted fixture
+to check trace and verdict consistency, without inference. It supports this
+specific fixture version; text reports retain schema `1` and remain readable.
+Replay checks consistency, not authenticity. This fixed public fixture is an
+integration test, not evidence of agent capability or held-out generalization.
+The protocol uses JSON text through `complete`, not native API tool calling.
+With OpenRouter it makes at most three sequential requests; live compatibility
+has not been verified and token/cost accounting remains unimplemented.
+
 ## Load and validate task files
 
 Task suites are JSON data files. Use the checked-in example as a starting point:
@@ -187,16 +225,19 @@ stability, custom-suite runs, snapshot consistency, and legacy report reading.
 Generator tests cover replay, provenance, duplicate detection, input bounds,
 corrupt-answer rejection, maximum-size suites, and the full offline
 generate → validate → run → report workflow.
+Tool episode tests cover successful and incorrect answers, mandatory reads,
+path rejection without host access, malformed actions, turn and response limits,
+sanitized errors, trace replay, overwrite protection, and CLI network gating.
 
 ## Scope and next step
 
 These six public development fixtures are deliberately small. Exact string
 matching penalizes extra formatting. The mock is a plumbing baseline, and its
-pass rate is not research evidence. LLM-generated tests, sandboxed coding/tool-use
+pass rate is not research evidence. LLM-generated tests, sandboxed coding
 episodes, independent held-out datasets, training, scheduling, and a website
 are not implemented.
 
-The next small step is one fixture-backed tool-use task with explicit tool-call
-and result traces, extending the evaluation loop beyond text transformations.
+The next small step is a second fixture-backed tool-use task and explicit
+failure cases, to test whether the episode contract generalizes beyond one lookup.
 See [the architecture note](docs/architecture.md) and
 [the project brief](project_brief.md).

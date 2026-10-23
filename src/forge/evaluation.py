@@ -57,6 +57,11 @@ def evaluate(config: Config, provider: Provider, suite: TaskSuite = DEFAULT_SUIT
 
 def load_report(path: Path) -> Dict[str, Any]:
     report = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(report, dict) and type(report.get("schema_version")) is int and report["schema_version"] == 2:
+        from forge.tool_episode import validate_tool_report
+
+        validate_tool_report(report)
+        return report
     if not isinstance(report, dict) or type(report.get("schema_version")) is not int or report["schema_version"] != 1:
         raise ValueError("unsupported report schema_version")
     results = report.get("results")

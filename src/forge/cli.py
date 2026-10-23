@@ -10,6 +10,7 @@ from forge.evaluation import evaluate, load_report
 from forge.generation import generate_suite
 from forge.providers import make_provider
 from forge.suites import DEFAULT_SUITE, load_suite, validate_suite
+from forge.tool_episode import evaluate_tool
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -26,6 +27,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     run.add_argument("--output", type=Path, default=Path("forge-results.json"))
     run.add_argument("--allow-network", action="store_true", help="allow paid OpenRouter inference")
     run.add_argument("--tasks", type=Path, help="load a versioned JSON suite instead of built-in tasks")
+    tool = commands.add_parser("run-tool", help="run the bounded inventory tool-use fixture")
+    tool.add_argument("--config", type=Path, default=Path("forge.json"))
+    tool.add_argument("--output", type=Path, default=Path("forge-tool-results.json"))
+    tool.add_argument("--allow-network", action="store_true", help="allow paid OpenRouter inference")
     validate = commands.add_parser("validate", help="check reference answers and mutation coverage offline")
     validate.add_argument("--tasks", type=Path, help="JSON suite; defaults to the built-in suite")
     validate.add_argument("--json", type=Path, dest="export", help="save validation evidence")
@@ -61,14 +66,17 @@ def main(argv: Optional[List[str]] = None) -> int:
                 if not check.killed_by:
                     print("surviving mutant: " + check.mutant_id)
             return 0 if validation.accepted else 1
-        if args.command == "run":
+        if args.command in ("run", "run-tool"):
             # Fail before any paid request when an output artifact already exists.
             if args.output.exists():
                 raise ValueError("output already exists; choose a new --output path")
             config = load_config(args.config)
-            suite = load_suite(args.tasks) if args.tasks is not None else DEFAULT_SUITE
-            validate_suite(suite).require_valid()
-            result = evaluate(config, make_provider(config, allow_network=args.allow_network), suite)
+            if args.command == "run-tool":
+                result = evaluate_tool(config, make_provider(config, allow_network=args.allow_network))
+            else:
+                suite = load_suite(args.tasks) if args.tasks is not None else DEFAULT_SUITE
+                validate_suite(suite).require_valid()
+                result = evaluate(config, make_provider(config, allow_network=args.allow_network), suite)
             write_json(args.output, result)
             summary = result["summary"]
             print("{passed}/{total} passed; {errors} provider errors. Saved {path}".format(
