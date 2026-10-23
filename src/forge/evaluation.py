@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 from forge import __version__
 from forge.config import Config
 from forge.providers import Provider, ProviderError
-from forge.tasks import SUITE_ID, TASKS, suite_digest, validate_fixtures
+from forge.suites import DEFAULT_SUITE, TaskSuite, parse_suite, validate_suite
 
 
 def summarize(results: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -21,11 +21,12 @@ def summarize(results: List[Dict[str, Any]]) -> Dict[str, Any]:
             "errors": errors, "pass_rate": passed / total if total else 0.0}
 
 
-def evaluate(config: Config, provider: Provider) -> Dict[str, Any]:
-    validate_fixtures()
+def evaluate(config: Config, provider: Provider, suite: TaskSuite = DEFAULT_SUITE) -> Dict[str, Any]:
+    validation = validate_suite(suite)
+    validation.require_valid()
     results: List[Dict[str, Any]] = []
     started = datetime.now(timezone.utc).isoformat()
-    for task in TASKS:
+    for task in suite.tasks:
         begin = perf_counter()
         answer: Optional[str] = None
         error: Optional[str] = None
@@ -47,7 +48,8 @@ def evaluate(config: Config, provider: Provider) -> Dict[str, Any]:
         "started_at": started,
         "environment": {"python": platform.python_version(), "platform": platform.system()},
         "config": config.to_dict(),
-        "suite": {"id": SUITE_ID, "split": "development", "sha256": suite_digest()},
+        "suite": dict(suite.to_dict(), sha256=suite.digest, digest_version=1),
+        "validation": validation.to_dict(),
         "results": results,
         "summary": summarize(results),
     }
@@ -74,4 +76,32 @@ def load_report(path: Path) -> Dict[str, Any]:
             raise ValueError("invalid report error status")
     if report.get("summary") != summarize(results):
         raise ValueError("report summary does not match results")
+    # Earlier schema-1 reports contain only suite metadata. New reports also carry
+    # an embedded task snapshot, whose digest must match its recorded identity.
+    suite_info = report.get("suite")
+    if isinstance(suite_info, dict) and "tasks" in suite_info:
+        snapshot = {key: value for key, value in suite_info.items() if key not in ("sha256", "digest_version")}
+        suite = parse_suite(snapshot)
+        if (type(suite_info.get("digest_version")) is not int or suite_info["digest_version"] != 1
+                or suite_info.get("sha256") != suite.digest):
+            raise ValueError("report suite digest does not match its task snapshot")
+        validation = report.get("validation")
+        if (not isinstance(validation, dict) or validation.get("suite_id") != suite.id
+                or validation.get("suite_sha256") != suite.digest or validation.get("accepted") is not True
+                or validation.get("tasks_checked") != len(suite.tasks)
+                or not isinstance(validation.get("validator_version"), str)
+                or not validation["validator_version"]):
+            raise ValueError("report validation evidence does not match the task snapshot")
+        if len(results) != len(suite.tasks):
+            raise ValueError("report results do not match the task snapshot")
+        for result, task in zip(results, suite.tasks):
+            if (result["task_id"] != task.task_id or result.get("prompt") != task.prompt
+                    or result.get("expected") != task.expected):
+                raise ValueError("report result does not match the task snapshot")
+            answer = result.get("answer")
+            if result["error"] is None and not isinstance(answer, str):
+                raise ValueError("report result has no text answer")
+            expected_pass = result["error"] is None and answer == task.expected
+            if result["passed"] != expected_pass:
+                raise ValueError("report verdict does not match its answer")
     return report

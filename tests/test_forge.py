@@ -15,7 +15,8 @@ from forge.cli import main
 from forge.config import Config, load_config, write_json
 from forge.evaluation import evaluate, load_report
 from forge.providers import MockProvider, OpenRouterProvider, ProviderError, make_provider
-from forge.tasks import TASKS, suite_digest, validate_fixtures
+from forge.tasks import TASKS
+from forge.suites import DEFAULT_SUITE, validate_suite
 
 
 class FixtureTests(unittest.TestCase):
@@ -27,13 +28,13 @@ class FixtureTests(unittest.TestCase):
                 self.assertNotIn("expected", json.loads(task.prompt))
 
     def test_verifiers_reject_known_mutations_and_extra_whitespace(self):
-        validate_fixtures()
+        self.assertTrue(validate_suite(DEFAULT_SUITE).accepted)
         for task in TASKS:
             with self.subTest(task=task.task_id):
                 self.assertTrue(task.verify(task.expected))
                 self.assertFalse(task.verify(task.known_wrong))
                 self.assertFalse(task.verify(task.expected + "\n"))
-        self.assertEqual(len(suite_digest()), 64)
+        self.assertEqual(len(DEFAULT_SUITE.digest), 64)
 
     def test_suite_catches_three_independent_mutated_implementations(self):
         mutants = {

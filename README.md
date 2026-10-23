@@ -1,7 +1,8 @@
 # Forge
 
-A small evaluation CLI: run a provider against six verifiable development tasks,
-save the evidence, and inspect a JSON report. This first slice exercises evaluation
+A small evaluation CLI: run a provider against a validated development task suite,
+save the evidence, and inspect a JSON report. Six built-in cases provide an offline
+starting point. This slice exercises evaluation
 plumbing, not coding-agent capability or the project's research hypothesis.
 
 ## Install and run
@@ -13,6 +14,7 @@ python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip setuptools
 .venv/bin/python -m pip install -e .
 .venv/bin/forge init
+.venv/bin/forge validate
 .venv/bin/forge run
 .venv/bin/forge report
 .venv/bin/forge report --json exported-report.json
@@ -41,15 +43,73 @@ a completed run with failed tasks (including provider errors), `2` for input,
 configuration, or file errors. `report` returns `0` when it successfully reads
 a valid report, even if that saved run contains failures.
 
+## Load and validate task files
+
+Task suites are JSON data files. Use the checked-in example as a starting point:
+
+```sh
+.venv/bin/forge validate --tasks examples/text-dev-v1.json --json validation.json
+.venv/bin/forge run --tasks examples/text-dev-v1.json --output custom-results.json
+.venv/bin/forge report --input custom-results.json
+```
+
+`validate` runs entirely offline and needs no config or provider. It checks each
+expected answer against a trusted reference implementation, confirms that each
+`known_wrong` answer is wrong, and checks whether the cases catch every shipped
+mutant for the operations in the suite. A mutant is a deliberately faulty
+implementation, such as lexical numeric sorting or dropping duplicate numbers.
+The validation JSON identifies which task IDs catch each mutant. Correct labels
+alone are insufficient: a palindrome-only reversal suite cannot catch a provider
+that simply returns its input. Such a suite is rejected.
+
+Validation exits `0` for an accepted suite, `1` for failed reference/mutation
+checks, and `2` for malformed files or file errors. Diagnostic JSON can be saved
+even when checks fail. `run` performs the same preflight; an invalid suite returns
+`2` before provider creation or inference, without creating a results file.
+Existing evidence files are never overwritten.
+
+The task document fields are:
+
+| Field | Contract |
+| --- | --- |
+| `schema_version` | Integer `1` |
+| `id` | Stable suite identifier, 1–80 characters |
+| `split` | `development`; other splits are rejected in this slice |
+| `source` | Nonempty provenance description, up to 1,000 characters |
+| `tasks` | Array of 1–1,000 tasks, in execution order |
+
+Every task has exactly `task_id`, `operation`, `text`, `expected`, and
+`known_wrong`. IDs start with a letter or digit and contain only letters, digits,
+dots, underscores, or hyphens; task IDs are unique within a suite. The three
+operations are `reverse`, `word_count`, and `sort_numbers`. Text and answer fields
+must be strings of at most 10,000 characters. Numeric sort inputs contain
+comma-separated signed integers with at most 18 digits each and no spaces;
+outputs use canonical decimal spelling. Reversal uses Unicode code points;
+word counting uses Unicode whitespace. Task files are capped at 1 MB and unknown
+fields are rejected. See [the complete example](examples/text-dev-v1.json).
+
+Reference and mutant implementations are trusted code shipped with Forge.
+Suite files contain no executable verifier or provider code. The `source` field
+records the author's provenance claim; Forge does not authenticate that claim.
+Mutation coverage checks a finite list of known bugs, not all possible errors.
+
 ## Report contents
 
 Each report includes schema/tool versions, UTC start time, Python/platform,
-the resolved config, suite ID and SHA-256 digest, and per-task prompts, expected
+the resolved config, a complete suite snapshot and SHA-256 digest, validation
+evidence, and per-task prompts, expected
 answers, actual answers, verdicts, provider errors, and elapsed seconds. Its
 summary includes total, passed, failed, error count, and pass rate. Provider
 errors are a subset of failures. Answers and verdicts are repeatable for the
 mock; timestamps and timings vary. Reports include the development answers,
 so they must never serve as independent held-out evaluation material.
+
+Suite `digest_version: 1` hashes canonical JSON containing the complete task
+document, including metadata and task order. Formatting and JSON key order do
+not affect it. Earlier reports hashed only the built-in task list; those reports
+have no digest version and remain readable. New reports are checked against
+their embedded snapshot, including answer/verdict consistency. Hashes detect
+inconsistency, not malicious rewrites or authenticity.
 
 ## Optional OpenRouter
 
@@ -60,8 +120,9 @@ the config. Supply `OPENROUTER_API_KEY` in your environment, then run:
 .venv/bin/forge run --allow-network --output openrouter-results.json
 ```
 
-Both the flag and environment key are required. This sends six sequential API
-requests and may incur charges. There are no retries. The adapter has offline
+Both the flag and environment key are required. This sends one sequential API
+request per task (six for the built-in suite)
+and may incur charges. There are no retries. The adapter has offline
 tests using a fake HTTP transport; live compatibility has not been verified.
 The report records the requested model ID, not a resolved model revision or
 provider routing. Temperature zero does not guarantee remote reproducibility.
@@ -77,9 +138,9 @@ included in config or reports; keep `.env` files out of Git.
 Tests cover the full CLI path, repeatable mock outcomes, known wrong answers,
 strict output verification, report consistency, malformed inputs, overwrite
 protection, and mocked OpenRouter requests and failures. No paid calls or
-generated code execution occur. Verifiers also check a known wrong answer per
-fixture before each run. This is a small mutation smoke check, not validation
-of arbitrary generated tests.
+generated code execution occur. Suite tests check schema failures, independent
+reference answers, named mutant detection, rejection before inference, digest
+stability, custom-suite runs, snapshot consistency, and legacy report reading.
 
 ## Scope and next step
 
@@ -89,7 +150,7 @@ pass rate is not research evidence. Generated tasks, sandboxed coding/tool-use
 episodes, independent held-out datasets, training, scheduling, and a website
 are not implemented.
 
-The next small step is to strengthen verifier validation with independent
-mutation cases and a versioned task-file format, before accepting generated
-tasks. See [the architecture note](docs/architecture.md) and
+The next small step is a seeded, offline `forge generate` command that emits this
+task format from bounded templates, records generator provenance, and passes
+the same validation gate. See [the architecture note](docs/architecture.md) and
 [the project brief](project_brief.md).

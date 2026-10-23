@@ -1,8 +1,7 @@
 """Versioned development fixtures. Nothing in this module executes model output."""
 
-import hashlib
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Tuple
 
 SUITE_ID = "text-dev-v1"
@@ -42,17 +41,3 @@ TASKS: Tuple[Task, ...] = (
     Task("sort-numeric", "sort_numbers", "10,-2,3,3,0", "-2,0,3,3,10", "-2,0,10,3,3"),
     Task("sort-single", "sort_numbers", "5", "5", ""),
 )
-
-
-def suite_digest() -> str:
-    content = json.dumps([asdict(task) for task in TASKS], sort_keys=True, ensure_ascii=False)
-    return hashlib.sha256(content.encode("utf-8")).hexdigest()
-
-
-def validate_fixtures() -> None:
-    """Smoke-check the oracle and one known mutant per task, not arbitrary generated tests."""
-    if len({task.task_id for task in TASKS}) != len(TASKS):
-        raise ValueError("duplicate fixture task IDs")
-    for task in TASKS:
-        if not task.verify(task.expected) or task.verify(task.known_wrong):
-            raise ValueError("invalid verifier fixture: " + task.task_id)

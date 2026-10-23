@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "id": "text-dev-v1",
+  "split": "development",
+  "source": "builtin:forge/text-dev-v1",
+  "tasks": [
+    {
+      "task_id": "reverse-basic",
+      "operation": "reverse",
+      "text": "forge",
+      "expected": "egrof",
+      "known_wrong": "forge"
+    },
+    {
+      "task_id": "reverse-unicode",
+      "operation": "reverse",
+      "text": "aé猫",
+      "expected": "猫éa",
+      "known_wrong": "aé猫"
+    },
+    {
+      "task_id": "count-whitespace",
+      "operation": "word_count",
+      "text": " one\t two\nthree  ",
+      "expected": "3",
+      "known_wrong": "5"
+    },
+    {
+      "task_id": "count-empty",
+      "operation": "word_count",
+      "text": "",
+      "expected": "0",
+      "known_wrong": "1"
+    },
+    {
+      "task_id": "sort-numeric",
+      "operation": "sort_numbers",
+      "text": "10,-2,3,3,0",
+      "expected": "-2,0,3,3,10",
+      "known_wrong": "-2,0,10,3,3"
+    },
+    {
+      "task_id": "sort-single",
+      "operation": "sort_numbers",
+      "text": "5",
+      "expected": "5",
+      "known_wrong": ""
+    }
+  ]
+}
