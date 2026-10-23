@@ -8,3 +8,4 @@ dist/
 .env.*
 forge.json
 forge-results.json
+forge-tasks.json

@@ -1,4 +1,4 @@
-# Evaluation and task validation
+# Generation, validation, and evaluation
 
 The data flow is `CLI -> config -> provider -> evaluation -> JSON -> report`.
 The CLI owns paths, explicit network consent, exit codes, and presentation.
@@ -22,6 +22,33 @@ The report embeds the complete suite and validation evidence, so source-file
 edits do not change the saved record. Earlier reports retain their legacy
 metadata-only format and remain readable; new report fields are additive.
 No held-out or training dataset exists yet; these fixtures are development-only.
+
+`generation.py` constructs development suites using a local `random.Random`
+instance and bounded templates. It guarantees coverage-bearing cases for the
+three operations before adding boundary cases and further varied inputs. Task
+IDs reflect execution order; operation/input pairs are unique within each suite.
+Duplicate candidates are resampled with a bounded retry count. This retry is
+only for duplicates: generation never silently edits the validation policy or
+retries a rejected suite until its mutation score happens to pass.
+
+The generator builds labels from template inputs rather than reading the
+validator's reference outputs. Generated suites still pass through the same
+independent references and mutation gate as handwritten suites, before any file
+is created. The code intentionally shares simple operations with the mock;
+mock success is an integration check, not independent capability evidence.
+
+The existing provenance string uses a `generator:` URI with generator version,
+seed, count, Python version, and runtime implementation. This keeps task schema
+1 unchanged while making the recipe machine-readable. Timestamp, local paths,
+and process-global random state do not enter the recipe. Generator behavior
+changes require a new generator version; Python runtime changes may also change
+sampling. Snapshots remain the authoritative record of the generated cases.
+
+The central generation tradeoff is predictable, bounded templates versus broader
+task diversity. These templates are deliberately designed to catch known bugs,
+so high mutation coverage is not evidence of broad evaluator quality. A new seed
+changes the sample within the same distribution; it does not create an
+independent held-out benchmark or guarantee disjoint task inputs.
 
 The provider protocol exposes just `complete(prompt) -> str`. The deterministic
 mock computes answers independently of the expected-answer table. OpenRouter
@@ -67,8 +94,8 @@ to debug, but cannot evaluate repository edits or tool-use trajectories. Model
 output is always data; nothing calls `eval`, `exec`, or a shell with that output.
 Real coding tasks require a separately designed sandbox before execution.
 
-The next increment can generate task data from seeded, bounded templates and
-reuse this gate. Generation should preserve source/version/seed provenance and
-never weaken validation to force a candidate suite to pass. A future training
-pipeline must use separate task sources and an independently versioned held-out
-suite with an explicit isolation workflow.
+The next increment can add one bounded tool-use episode over trusted fixture
+files, with explicit tool-call/result traces. This supplies a real trajectory
+boundary without executing model-generated code. A future training pipeline
+must use separate task sources and an independently versioned held-out suite
+with an explicit isolation workflow.

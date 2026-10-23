@@ -7,6 +7,7 @@ from typing import List, Optional
 
 from forge.config import Config, load_config, write_json
 from forge.evaluation import evaluate, load_report
+from forge.generation import generate_suite
 from forge.providers import make_provider
 from forge.suites import DEFAULT_SUITE, load_suite, validate_suite
 
@@ -16,6 +17,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     init = commands.add_parser("init", help="create an offline sample config")
     init.add_argument("--config", type=Path, default=Path("forge.json"))
+    generate = commands.add_parser("generate", help="generate a validated development suite offline")
+    generate.add_argument("--seed", type=int, default=0, help="random seed, 0-4294967295 (default: 0)")
+    generate.add_argument("--count", type=int, default=12, help="number of tasks, 3-1000 (default: 12)")
+    generate.add_argument("--output", type=Path, default=Path("forge-tasks.json"))
     run = commands.add_parser("run", help="evaluate a validated development suite")
     run.add_argument("--config", type=Path, default=Path("forge.json"))
     run.add_argument("--output", type=Path, default=Path("forge-results.json"))
@@ -32,6 +37,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         if args.command == "init":
             write_json(args.config, Config().to_dict())
             print("Created " + str(args.config))
+            return 0
+        if args.command == "generate":
+            if args.output.exists():
+                raise ValueError("output already exists; choose a new --output path")
+            suite = generate_suite(seed=args.seed, count=args.count)
+            write_json(args.output, suite.to_dict())
+            print("Created {} validated development tasks in {} (seed {})".format(
+                len(suite.tasks), args.output, args.seed))
             return 0
         if args.command == "validate":
             suite = load_suite(args.tasks) if args.tasks is not None else DEFAULT_SUITE

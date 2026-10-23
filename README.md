@@ -43,6 +43,49 @@ a completed run with failed tasks (including provider errors), `2` for input,
 configuration, or file errors. `report` returns `0` when it successfully reads
 a valid report, even if that saved run contains failures.
 
+## Generate development tasks
+
+After `forge init`, generate and evaluate a reproducible task file:
+
+```sh
+.venv/bin/forge generate --seed 42 --count 12
+.venv/bin/forge validate --tasks forge-tasks.json
+.venv/bin/forge run --tasks forge-tasks.json --output generated-results.json
+.venv/bin/forge report --input generated-results.json
+```
+
+`generate` needs no config, provider, or network access. It writes
+`forge-tasks.json` by default, or a new path supplied with `--output`, and refuses
+to overwrite existing files. Defaults are `--seed 0 --count 12`. Seeds must be
+integers from `0` through `4294967295`; counts must be integers from `3` through
+`1000`. Generation or file errors return exit code `2`.
+
+The first three cases cover non-palindrome reversal, irregular whitespace
+counting, and numeric sorting with negatives and duplicates. Counts of six or
+more also include an empty reversal, empty word count, and singleton sort. Extra
+cases vary the same bounded templates. Within a suite, no two tasks have the
+same operation and input. Duplicate candidates are resampled, with a maximum of
+100 attempts per task. The completed suite must pass the existing reference and
+mutation checks before it is written; failed validation creates no output file.
+
+The existing `source` field records a recipe such as:
+
+```text
+generator:forge/text-templates-v1?seed=42&count=12&python=3.9.6&runtime=CPython
+```
+
+It identifies the generator version, seed, count, and Python runtime. With the
+same generator and recorded runtime, the same recipe produces identical task
+file bytes and a stable digest. No timestamp or output path is included.
+Reproduction across Python versions is not promised; preserve the generated
+file and the report's embedded snapshot. Generation uses its own random stream
+and leaves process-global randomness untouched.
+
+These are generated **task data**, not generated executable code or LLM-created
+tests. Different seeds can overlap and share the same templates. They do not
+establish independent training/evaluation splits or demonstrate generalization
+beyond the known mutation checks.
+
 ## Load and validate task files
 
 Task suites are JSON data files. Use the checked-in example as a starting point:
@@ -141,16 +184,19 @@ protection, and mocked OpenRouter requests and failures. No paid calls or
 generated code execution occur. Suite tests check schema failures, independent
 reference answers, named mutant detection, rejection before inference, digest
 stability, custom-suite runs, snapshot consistency, and legacy report reading.
+Generator tests cover replay, provenance, duplicate detection, input bounds,
+corrupt-answer rejection, maximum-size suites, and the full offline
+generate → validate → run → report workflow.
 
 ## Scope and next step
 
 These six public development fixtures are deliberately small. Exact string
 matching penalizes extra formatting. The mock is a plumbing baseline, and its
-pass rate is not research evidence. Generated tasks, sandboxed coding/tool-use
+pass rate is not research evidence. LLM-generated tests, sandboxed coding/tool-use
 episodes, independent held-out datasets, training, scheduling, and a website
 are not implemented.
 
-The next small step is a seeded, offline `forge generate` command that emits this
-task format from bounded templates, records generator provenance, and passes
-the same validation gate. See [the architecture note](docs/architecture.md) and
+The next small step is one fixture-backed tool-use task with explicit tool-call
+and result traces, extending the evaluation loop beyond text transformations.
+See [the architecture note](docs/architecture.md) and
 [the project brief](project_brief.md).
