@@ -9,6 +9,9 @@ description = "A small, reproducible evaluation CLI for verifiable tasks"
 requires-python = ">=3.9"
 dependencies = []
 
+[project.optional-dependencies]
+http = ["aiohttp>=3.11,<4"]
+
 [project.scripts]
 forge = "forge.cli:main"
 

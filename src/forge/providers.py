@@ -16,6 +16,27 @@ class ProviderError(Exception):
 class RetryableProviderError(ProviderError):
     """A transient transport failure; retry only with an explicit attempt budget."""
 
+    def __init__(self, message: str, *, retry_after_seconds: float = 0.0) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
+
+
+class ProviderTimeoutError(RetryableProviderError):
+    """The complete request exceeded its deadline."""
+
+
+class AsyncProvider(Protocol):
+    async def acomplete(self, prompt: str) -> str:
+        ...
+
+
+class AsyncMockProvider:
+    def __init__(self, mode: str = "correct") -> None:
+        self._mock = MockProvider(mode)
+
+    async def acomplete(self, prompt: str) -> str:
+        return self._mock.complete(prompt)
+
 
 class Provider(Protocol):
     # Concurrent runners share this object: implementations must be thread-safe.

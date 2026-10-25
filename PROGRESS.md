@@ -1,5 +1,18 @@
 # Forge progress
 
+## Native HTTP increment (2026-10-25)
+
+Added optional `http` extra (aiohttp), a separate `AsyncProvider.acomplete()`
+protocol, and a context-managed native OpenRouter session. The synchronous
+`complete()` API is unchanged. A whole-request deadline covers pool acquisition,
+headers, and bounded body reading; cancellation propagates and closes responses.
+Transient exceptions carry parsed numeric/HTTP-date Retry-After delays. Redirects
+are disabled; credentials and response/error bodies stay out of error messages.
+Transport tests use fake responses and events, with no API calls or credentials.
+`python -m unittest discover -s tests -q`: 80 passed, 0 failures/errors.
+Next in this task: separate active/pending retry bounds, jitter, fairness, CLI,
+and benchmark metrics.
+
 ## Completed milestones
 
 - `67417cf`: installable offline evaluation CLI, deterministic fixtures, mock and
