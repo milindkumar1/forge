@@ -17,6 +17,7 @@ except ImportError as exc:
 from forge.providers import ProviderError, ProviderTimeoutError, RetryableProviderError
 
 MAX_RESPONSE_BYTES = 1_000_000
+ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 
 
 def parse_retry_after(value: Optional[str], *, now: Optional[float] = None) -> float:
@@ -90,7 +91,7 @@ class AsyncOpenRouterProvider:
     async def _request(self, prompt: str) -> str:
         assert self._session is not None
         async with self._session.post(
-            "https://openrouter.ai/api/v1/chat/completions",
+            ENDPOINT,
             json={"model": self.model, "messages": [{"role": "user", "content": prompt}],
                   "temperature": 0, "max_tokens": 256},
             headers={"Authorization": "Bearer " + self._key}, allow_redirects=False,

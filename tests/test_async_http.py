@@ -3,6 +3,7 @@ import json
 import unittest
 from email.utils import formatdate
 from unittest.mock import patch
+from dataclasses import replace
 
 try:
     from forge.async_http import AsyncOpenRouterProvider, parse_retry_after
@@ -10,6 +11,9 @@ except ImportError:
     AsyncOpenRouterProvider = None
 
 from forge.providers import ProviderError, ProviderTimeoutError, RetryableProviderError
+from forge.config import Config
+from forge.native_runtime import NativeRuntimeOptions, evaluate_native
+from forge.suites import DEFAULT_SUITE
 
 
 class Response:
@@ -104,6 +108,59 @@ class AsyncHttpTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(asyncio.CancelledError):
                     await task
         self.assertTrue(response.closed)
+
+    async def test_real_loopback_http_retries_and_body_deadline_close_sockets(self):
+        requests = []
+        disconnected = asyncio.Event()
+        handlers = set()
+        stalled = False
+
+        async def handle(reader, writer):
+            current = asyncio.current_task()
+            handlers.add(current)
+            try:
+                headers = await reader.readuntil(b"\r\n\r\n")
+                length = next(int(line.split(b":", 1)[1]) for line in headers.split(b"\r\n")
+                              if line.lower().startswith(b"content-length:"))
+                requests.append(json.loads(await reader.readexactly(length)))
+                if stalled:
+                    writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n{")
+                    await writer.drain()
+                    await reader.read()
+                    disconnected.set()
+                else:
+                    status = b"429 Too Many Requests" if len(requests) == 1 else b"200 OK"
+                    body = b'{"choices":[{"message":{"content":"egrof"}}]}'
+                    writer.write(b"HTTP/1.1 " + status + b"\r\nRetry-After: 0\r\nConnection: close\r\nContent-Length: "
+                                 + str(len(body)).encode() + b"\r\n\r\n" + body)
+                    await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+                handlers.discard(current)
+
+        server = await asyncio.start_server(handle, "127.0.0.1", 0)
+        address = "http://127.0.0.1:{}/".format(server.sockets[0].getsockname()[1])
+        try:
+            with patch("forge.async_http.ENDPOINT", address):
+                async with self.provider() as provider:
+                    report = await evaluate_native(Config(), provider,
+                        replace(DEFAULT_SUITE, tasks=(DEFAULT_SUITE.tasks[0],)),
+                        NativeRuntimeOptions(max_attempts=2, retry_delay_seconds=0))
+                self.assertEqual(report["summary"]["passed"], 1)
+                self.assertEqual(report["runtime"]["retries"], 1)
+                self.assertEqual(len(requests), 2)
+                stalled = True
+                async with self.provider(timeout=0.01) as provider:
+                    with self.assertRaises(ProviderTimeoutError):
+                        await provider.acomplete("stall")
+                await asyncio.wait_for(disconnected.wait(), 2)
+        finally:
+            server.close()
+            await server.wait_closed()
+            for task in list(handlers):
+                task.cancel()
+            await asyncio.gather(*handlers, return_exceptions=True)
 
     def test_retry_after_seconds_dates_invalid_and_huge_values(self):
         now = 1_700_000_000

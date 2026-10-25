@@ -13,6 +13,23 @@ Transport tests use fake responses and events, with no API calls or credentials.
 Next in this task: separate active/pending retry bounds, jitter, fairness, CLI,
 and benchmark metrics.
 
+## Native scheduler increment (2026-10-25)
+
+Added `--native-async` with separate active-request and pending-retry limits.
+One central timer heap holds delayed/ready retries; delays release request
+capacity. Admission alternates fresh work and due retries when both are ready.
+Full jitter uses a task/attempt-specific seed; Retry-After is a minimum delay.
+Overflow and excessive server waits terminate explicitly (`retry_queue_full`,
+`retry_after_limit`). This is per-request backoff, not a provider-wide rate limiter.
+Native runtime evidence is versioned independently; legacy reports still load.
+
+94 tests passed, 0 failures/errors, including a real loopback HTTP 429/retry
+exchange and stalled-body deadline with socket disconnect verification. The
+sandbox blocks binding loopback sockets; this suite ran with the required
+permission. No external services were contacted. Deterministic event/virtual
+clock tests cover storms, fairness, cancellation, deadlines, and both bounds.
+Next in this task: benchmark distributions/error/retry metrics and documentation.
+
 ## Completed milestones
 
 - `67417cf`: installable offline evaluation CLI, deterministic fixtures, mock and

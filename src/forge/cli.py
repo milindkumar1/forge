@@ -9,10 +9,25 @@ from typing import List, Optional
 from forge.config import Config, load_config, write_json
 from forge.evaluation import evaluate, load_report
 from forge.generation import generate_suite
-from forge.providers import make_provider
+from forge.providers import AsyncMockProvider, make_provider
+from forge.native_runtime import NativeRuntimeOptions, evaluate_native
 from forge.runtime import RuntimeOptions, evaluate_async
-from forge.suites import DEFAULT_SUITE, load_suite, validate_suite
+from forge.suites import DEFAULT_SUITE, TaskSuite, load_suite, validate_suite
 from forge.tool_episode import evaluate_tool
+
+
+async def run_native(config: Config, suite: TaskSuite, options: NativeRuntimeOptions,
+                     allow_network: bool) -> dict:
+    if config.provider == "mock":
+        return await evaluate_native(config, AsyncMockProvider(config.mock_mode), suite, options)
+    try:
+        from forge.async_http import AsyncOpenRouterProvider
+    except ImportError as exc:
+        raise ValueError("native HTTP requires: pip install 'forge-evals[http]'") from exc
+    async with AsyncOpenRouterProvider(config.model, allow_network=allow_network,
+                                       request_timeout_seconds=options.request_timeout_seconds,
+                                       max_connections=options.concurrency) as provider:
+        return await evaluate_native(config, provider, suite, options)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -32,6 +47,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     run.add_argument("--concurrency", type=int, help="use bounded async runner with 1-64 workers")
     run.add_argument("--max-attempts", type=int, default=1, help="attempts per task, 1-5; requires --concurrency")
     run.add_argument("--retry-delay", type=float, default=0.25, help="initial backoff seconds, 0-60; requires --concurrency")
+    run.add_argument("--native-async", action="store_true", help="use native async provider and bounded retry queue")
+    run.add_argument("--max-pending-retries", type=int, help="native: retry queue capacity, 0-1000 (default: 64)")
+    run.add_argument("--request-timeout", type=float, help="native: whole-request deadline in seconds (default: 30)")
+    run.add_argument("--retry-seed", type=int, help="native: reproducible full-jitter seed (default: 0)")
+    run.add_argument("--max-retry-after", type=float, help="native: refuse longer server waits in seconds (default: 300)")
     tool = commands.add_parser("run-tool", help="run the bounded inventory tool-use fixture")
     tool.add_argument("--config", type=Path, default=Path("forge.json"))
     tool.add_argument("--output", type=Path, default=Path("forge-tool-results.json"))
@@ -80,15 +100,29 @@ def main(argv: Optional[List[str]] = None) -> int:
                 result = evaluate_tool(config, make_provider(config, allow_network=args.allow_network))
             else:
                 options = None
-                if args.concurrency is not None:
+                native_options = None
+                native_flags = (args.max_pending_retries, args.request_timeout, args.retry_seed, args.max_retry_after)
+                if args.native_async:
+                    native_options = NativeRuntimeOptions(
+                        concurrency=args.concurrency if args.concurrency is not None else 1,
+                        max_attempts=args.max_attempts, retry_delay_seconds=args.retry_delay,
+                        **{key: value for key, value in zip(
+                            ("max_pending_retries", "request_timeout_seconds", "retry_seed", "max_retry_after_seconds"),
+                            native_flags) if value is not None})
+                elif any(value is not None for value in native_flags):
+                    raise ValueError("native runtime options require --native-async")
+                elif args.concurrency is not None:
                     options = RuntimeOptions(args.concurrency, args.max_attempts, args.retry_delay)
                 elif args.max_attempts != 1 or args.retry_delay != 0.25:
                     raise ValueError("retry options require --concurrency")
                 suite = load_suite(args.tasks) if args.tasks is not None else DEFAULT_SUITE
                 validate_suite(suite).require_valid()
-                provider = make_provider(config, allow_network=args.allow_network)
-                result = (evaluate(config, provider, suite) if options is None else
-                          asyncio.run(evaluate_async(config, provider, suite, options)))
+                if native_options is not None:
+                    result = asyncio.run(run_native(config, suite, native_options, args.allow_network))
+                else:
+                    provider = make_provider(config, allow_network=args.allow_network)
+                    result = (evaluate(config, provider, suite) if options is None else
+                              asyncio.run(evaluate_async(config, provider, suite, options)))
             write_json(args.output, result)
             summary = result["summary"]
             print("{passed}/{total} passed; {errors} provider errors. Saved {path}".format(
