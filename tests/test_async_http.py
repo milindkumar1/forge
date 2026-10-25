@@ -59,6 +59,18 @@ class AsyncHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(session.closed)
         self.assertTrue(response.closed)
 
+    async def test_usage_metadata_is_optional_validated_and_keeps_text_api(self):
+        body = {"choices": [{"message": {"content": "ok"}}], "usage": {"total_tokens": 17}}
+        async with self.provider() as provider:
+            with patch.object(provider._session, "post", return_value=Response(chunks=[json.dumps(body).encode()])):
+                completion = await provider.acomplete_with_usage("test")
+                self.assertEqual((completion.text, completion.total_tokens), ("ok", 17))
+                self.assertEqual(await provider.acomplete("test"), "ok")
+            body["usage"]["total_tokens"] = True
+            with patch.object(provider._session, "post", return_value=Response(chunks=[json.dumps(body).encode()])):
+                with self.assertRaises(ProviderError):
+                    await provider.acomplete_with_usage("test")
+
     async def test_status_and_body_validation_sanitize_errors(self):
         for response, expected in ((Response(429, {"Retry-After": "7"}), RetryableProviderError),
                                    (Response(503), RetryableProviderError),

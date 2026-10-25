@@ -4,6 +4,8 @@ import json
 import os
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
+from typing import Optional
 from typing import Protocol
 
 from forge.config import Config
@@ -23,6 +25,21 @@ class RetryableProviderError(ProviderError):
 
 class ProviderTimeoutError(RetryableProviderError):
     """The complete request exceeded its deadline."""
+
+
+class ProviderRateLimitError(RetryableProviderError):
+    """HTTP 429 feedback applies to the whole provider admission scope."""
+
+
+@dataclass(frozen=True)
+class Completion:
+    text: str
+    total_tokens: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.text, str) or (self.total_tokens is not None and
+                (type(self.total_tokens) is not int or self.total_tokens < 0)):
+            raise ValueError("invalid completion or token usage")
 
 
 class AsyncProvider(Protocol):

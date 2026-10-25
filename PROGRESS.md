@@ -1,5 +1,22 @@
 # Forge progress
 
+## Provider coordination increment (2026-10-25)
+
+Added a reusable, event-loop-local `ProviderCoordinator`: rolling 60-second RPM
+and TPM admission, FIFO waiters, provider-wide monotonic cooldown, a rolling
+retry budget, and closed/open/single-probe half-open circuit states. Reservations
+include every dispatched attempt. Reported usage reconciles token charges;
+unknown/failed/cancelled usage keeps the reservation, and underestimates become
+debt. In-flight reservations do not expire; settled token charges expire 60
+seconds after completion. The byte-based default reservation is an estimate,
+not exact tokenization. Native HTTP exposes optional usage metadata while
+preserving `acomplete() -> str` and the synchronous API.
+
+Tests cover bursts, exact expiry, FIFO token fairness, cancellation wakeups,
+retry budget exhaustion, usage debt, shared cooldown, and breaker recovery.
+Next: integrate the coordinator into native scheduler admission without occupying
+request slots while waiting, add reports/CLI, then benchmark simulated quotas.
+
 ## Native HTTP increment (2026-10-25)
 
 Added optional `http` extra (aiohttp), a separate `AsyncProvider.acomplete()`

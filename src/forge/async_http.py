@@ -14,7 +14,7 @@ try:
 except ImportError as exc:
     raise ImportError("native HTTP requires: pip install 'forge-evals[http]'") from exc
 
-from forge.providers import ProviderError, ProviderTimeoutError, RetryableProviderError
+from forge.providers import Completion, ProviderError, ProviderRateLimitError, ProviderTimeoutError, RetryableProviderError
 
 MAX_RESPONSE_BYTES = 1_000_000
 ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
@@ -77,6 +77,9 @@ class AsyncOpenRouterProvider:
             self._session = None
 
     async def acomplete(self, prompt: str) -> str:
+        return (await self.acomplete_with_usage(prompt)).text
+
+    async def acomplete_with_usage(self, prompt: str) -> Completion:
         if self._session is None:
             raise ValueError("use async with to open the provider session")
         try:
@@ -88,7 +91,7 @@ class AsyncOpenRouterProvider:
         except (ValueError, KeyError, IndexError, TypeError) as exc:
             raise ProviderError("provider returned an invalid response") from exc
 
-    async def _request(self, prompt: str) -> str:
+    async def _request(self, prompt: str) -> Completion:
         assert self._session is not None
         async with self._session.post(
             ENDPOINT,
@@ -97,7 +100,8 @@ class AsyncOpenRouterProvider:
             headers={"Authorization": "Bearer " + self._key}, allow_redirects=False,
         ) as response:
             if response.status in (429, 500, 502, 503, 504):
-                raise RetryableProviderError("provider HTTP request failed",
+                error_type = ProviderRateLimitError if response.status == 429 else RetryableProviderError
+                raise error_type("provider HTTP request failed",
                     retry_after_seconds=parse_retry_after(response.headers.get("Retry-After")))
             if response.status != 200:
                 raise ProviderError("provider HTTP request failed")
@@ -110,4 +114,6 @@ class AsyncOpenRouterProvider:
             answer = payload["choices"][0]["message"]["content"]
             if not isinstance(answer, str):
                 raise ProviderError("provider returned a non-text answer")
-            return answer
+            usage = payload.get("usage")
+            total = usage.get("total_tokens") if isinstance(usage, dict) else None
+            return Completion(answer, total)
