@@ -151,6 +151,30 @@ class NativeRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report["runtime"]["retries"], 6)
         validate_native_report(report)
 
+    async def test_due_retry_admits_while_another_request_is_still_active(self):
+        retry_started = asyncio.Event()
+        counts = {}
+        first = DEFAULT_SUITE.tasks[0].prompt
+        second = DEFAULT_SUITE.tasks[1].prompt
+
+        class Mixed(AsyncMockProvider):
+            async def acomplete(self, prompt):
+                counts[prompt] = counts.get(prompt, 0) + 1
+                if prompt == first:
+                    if counts[prompt] == 1:
+                        raise RetryableProviderError("transient", retry_after_seconds=0.001)
+                    retry_started.set()
+                if prompt == second:
+                    await retry_started.wait()
+                return await super().acomplete(prompt)
+
+        # A liveness guard, not a performance threshold; the long request can
+        # finish only after the scheduler's retry timer wakes its idle slot.
+        report = await asyncio.wait_for(evaluate_native(Config(), Mixed(), options=NativeRuntimeOptions(
+            concurrency=2, max_attempts=2, retry_delay_seconds=0)), 3)
+        self.assertEqual(report["summary"]["passed"], 6)
+        self.assertEqual(report["runtime"]["retries"], 1)
+
     async def test_cancellation_cleans_active_requests_without_admitting_more(self):
         entered = asyncio.Queue()
         closed = []

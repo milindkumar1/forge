@@ -144,8 +144,8 @@ so a run never leaves its provider threads running after it returns. Joining can
 block the event loop during failure cleanup. Providers must bound their own I/O;
 socket timeouts do not establish an end-to-end deadline. This bridge avoids a
 new HTTP dependency while preserving existing implementations, at the cost of
-thread resources and delayed cancellation. Native asynchronous HTTP is the next
-step for enforceable request deadlines and responsive cleanup.
+thread resources and delayed cancellation. The native path below provides
+whole-request deadlines and cooperative cancellation without the thread bridge.
 
 Primary references: Python's [executor integration](https://docs.python.org/3.9/library/asyncio-eventloop.html#executing-code-in-thread-or-process-pools)
 and [executor shutdown semantics](https://docs.python.org/3.9/library/concurrent.futures.html#concurrent.futures.Executor.shutdown).
@@ -154,6 +154,57 @@ constraint. The synthetic benchmark checks overlap on this host. Whether this
 improves real model throughput remains an untested hypothesis; batching, server
 capacity, and rate limits can dominate real workloads. No distributed execution
 or GPU performance claim follows from the experiment.
+
+## Native HTTP and fair retry admission
+
+`async_http.py` is optional (`forge-evals[http]`) and owns one aiohttp session
+per run. `AsyncProvider.acomplete()` is separate from `Provider.complete()`, so
+existing providers and callers keep their contracts. The native transport bounds
+response bodies to 1 MB, disables redirects and environment proxy discovery,
+and never serializes credential-bearing exceptions or HTTP error bodies.
+
+`asyncio.wait_for` covers the whole exchange, including connector acquisition,
+headers and streaming body reads, rather than resetting a timeout per chunk.
+The scheduler also enforces an admission-time request deadline for custom async
+providers. Cancellation must be cooperative: cleanup is awaited before another
+request uses the slot. The HTTP session is closed after scheduler cleanup. A
+deadline excludes retry delays and initial queueing; it is not a rollout deadline.
+
+`native_runtime.py` owns two independent bounded structures: at most C active
+request tasks and a timer heap of at most P pending retries (including ready
+retries waiting for capacity). Fresh tasks are drawn from the existing bounded
+suite. There is no per-task sleeping coroutine. Heap insertion costs O(log P);
+state, ordered results, and attempt evidence use O(task count * attempt budget).
+When both classes are ready, admissions alternate between fresh tasks and due
+retries. Fresh order is suite order; retry order is ready time then insertion
+sequence. This prevents starvation in either class without a promise about
+remote completion order. Failures are harvested in task-index order when they
+are observed simultaneously, making overload choices stable within that batch.
+
+The retry delay is `max(server_floor, U(0, min(60, base * 2**(attempt-1))))`.
+Per-task/attempt random streams make jitter samples independent of completion
+order; actual timing and retry overflow still depend on scheduling. This is
+full jitter, not multiplicative jitter around a fixed delay. Numeric and HTTP-date
+Retry-After values establish a minimum wait. Delays exceeding policy terminate
+explicitly instead of being capped downward. Pending-queue overflow sheds the
+retry as a recorded task error. This sacrifices recovery under overload in
+exchange for bounded memory and retry pressure. Fresh requests are not globally
+paused after a 429; provider-wide rate coordination is future work.
+
+The established protocol rule comes from [RFC 9110 Retry-After](https://www.rfc-editor.org/rfc/rfc9110.html#name-retry-after).
+The client pooling/lifecycle follows [aiohttp documentation](https://docs.aiohttp.org/en/stable/client_quickstart.html#make-a-request).
+The fair admission and overload policy are Forge design choices, verified with
+controlled event and virtual-clock tests. They are not research claims about
+optimal scheduling. A loopback HTTP fixture additionally verifies actual socket
+exchange, a 429 retry, and disconnect on a stalled-body deadline. No live API
+compatibility, GPU speedup, or distributed scaling result is claimed.
+
+The benchmark keeps synthetic scheduling experiments and real API runs in
+separate modes/artifacts. Attempt and task latencies are distinct; completion
+latency includes admission queueing where recorded. Nearest-rank percentiles,
+error/failure rates, and retry counts expose recovery costs even when final
+success rates hide transient failures. Per-sample p99 over a small development
+suite is descriptive, not a statistically stable tail estimate.
 
 The tradeoff is a small JSON-text action contract versus native provider tool
 calling. Reusing the provider boundary keeps this offline slice small and lets

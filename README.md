@@ -88,7 +88,7 @@ beyond the known mutation checks.
 
 ## Concurrent text evaluation
 
-The sequential runner remains the default. Opt into the bounded asynchronous
+The sequential runner remains the default. Opt into the original thread-backed
 runner for built-in or generated text suites:
 
 ```sh
@@ -111,8 +111,9 @@ and connection failures as retryable. Authentication errors, malformed responses
 non-text responses, and wrong answers do not retry. Retried requests can incur
 additional charges, including after an ambiguous transport failure. Network
 access still requires explicit `--allow-network`; no live calls were used here.
-Server `Retry-After`, rate limiting, retry jitter, and request deduplication are
-not implemented.
+This compatibility runner has no server-directed delay or jitter; the native
+runner below adds both. Neither runner provides a global rate limiter or request
+deduplication.
 
 Schema-1 reports add `runtime` settings, total attempts, peak submitted requests,
 elapsed time, and completed tasks/second. Per-task evidence adds initial queue
@@ -128,7 +129,59 @@ threads before propagating; no partial report is written. Cleanup may block the
 event loop until those calls finish. The provider owns I/O timeouts (OpenRouter
 uses a 30-second socket timeout, not an end-to-end deadline). A running Python
 thread cannot be forcibly cancelled. This is a local I/O concurrency runtime;
-it has no durable recovery, batching, native async HTTP, or distributed workers.
+it has no durable recovery, batching, or distributed workers.
+
+## Native asynchronous HTTP and retry scheduling
+
+The mock path needs no dependencies. Install the optional HTTP extra for OpenRouter:
+
+```sh
+.venv/bin/python -m pip install -e '.[http]'
+.venv/bin/forge run --native-async --concurrency 4 --request-timeout 30 \
+  --max-pending-retries 16 --max-attempts 3 --retry-delay 0.25 \
+  --retry-seed 42 --max-retry-after 300 --output native-results.json
+```
+
+This runs offline with the default mock config. An OpenRouter config also
+requires `--allow-network` and the environment API key, and may incur charges.
+The synchronous `complete()` API, default CLI behavior, and thread runner are
+preserved. The new Python API uses `AsyncProvider.acomplete()` and
+`evaluate_native()`; `AsyncOpenRouterProvider` requires an `async with` scope
+to own and close its pooled aiohttp session.
+
+`--request-timeout` is a whole-request deadline in (0, 3600] seconds (default 30),
+covering connection-pool acquisition, headers, and bounded body reading. It starts
+at request admission and excludes queueing and backoff. Expiry cancels and awaits
+the request before releasing its active slot. External cancellation propagates
+and cancels/awaits all active requests; pending timers are discarded. Custom async
+providers must cooperate with cancellation; no runtime can forcibly interrupt
+Python code that blocks the event loop or suppresses cancellation.
+
+`--concurrency` bounds active requests (default 1 for native mode). Independently,
+`--max-pending-retries` bounds delayed and ready retries (0-1000, default 64).
+A central timer heap releases request capacity during backoff; it does not create
+a sleeping task per retry. When fresh tasks and due retries are both ready,
+admission alternates between the two queues. Fresh tasks retain suite order;
+retry order is by ready time, then insertion order. Full retry queues produce
+`retry_queue_full` terminal failures instead of allocating more memory.
+
+The native retry policy uses **full jitter**:
+`delay = max(Retry-After, uniform(0, min(60, base_delay * 2**(attempt - 1))))`.
+Numeric and HTTP-date Retry-After values are supported for transient HTTP
+responses including 429; malformed/past values add no minimum wait. The random
+seed is local to each task/attempt, so the sampled delay is independent of
+completion order. Seeds reproduce sampled delays, not network timings or the
+set of overloaded tasks. A server wait beyond `--max-retry-after` (default 300,
+allowed (0, 3600]) produces `retry_after_limit`; the scheduler never shortens the
+server minimum into an early retry. Backoff is per request; it does not pause all
+fresh requests globally after a 429. Attempts remain bounded to 1-5, default 1.
+
+Native reports use runtime kind `native-async-v1` within report schema 1. They
+record timeout flags, retry floors/delays, termination reasons, peak active and
+pending counts, total attempts, executed retries, and refused retries. Saved
+runtime evidence is validated on load; it is not an authentication mechanism.
+
+## Runtime benchmarks
 
 Run the reproducible offline experiment:
 
@@ -136,13 +189,37 @@ Run the reproducible offline experiment:
 .venv/bin/python benchmarks/runtime.py --output /tmp/forge-runtime-benchmark.json
 ```
 
-It compares the original sequential runner with async concurrency 1 and 4 over
-24 seeded tasks, adding a 10 ms blocking sleep per request, with three rotated
-repetitions and unmeasured warmups. JSON saves environment, suite digest, raw
-samples, median wall times, throughput, and task-duration median/p95. Outputs
-refuse overwrite. These durations include the simulated wait; they are not
-GPU, model-serving, or network latency measurements. Measured results and next
-steps are recorded in [PROGRESS.md](PROGRESS.md).
+Synthetic mode compares sequential, thread-backed (1/4), and native async (1/4)
+scheduling over 24 seeded tasks with a 10 ms sleep, three rotated repetitions,
+and offline warmups. The native mock uses `asyncio.sleep`; this measures scheduler
+behavior, not the HTTP transport. Add `--transient-every 3` to fail the first
+attempt of every third task. Concurrent modes get two attempts with zero backoff;
+the original sequential baseline has one attempt. Failure-injection runs compare
+recovery behavior under these different policies, not equal-work speedups.
+
+Benchmark schema 2 records completed/successful tasks per second, final task
+error/failure rates, attempt error rate, executed retry counts, and nearest-rank
+p50/p95/p99 latencies. Attempt latency measures each request. Task latency includes
+retry waits but excludes initial admission queueing; completion latency includes
+that queueing and is null for the sequential baseline, which does not record it.
+Wall time includes validation, report construction, and session setup/cleanup.
+Percentiles are per sample; with 24 tasks, p99 is the maximum. Raw samples,
+environment, and suite digest are saved. Artifacts refuse overwrite.
+
+Real API measurements require a separate mode and output, an OpenRouter config,
+and explicit paid-network opt-in:
+
+```sh
+.venv/bin/python benchmarks/runtime.py --mode api --config openrouter.json \
+  --allow-network --count 6 --repeats 1 --concurrency 2 --max-attempts 1 \
+  --output /tmp/forge-real-api.json
+```
+
+API mode performs no warmup calls or synthetic delays/failures and saves complete
+run reports. It measures remote inference, routing, networking, and local overhead
+together; it cannot isolate GPU performance. Outputs are tagged `synthetic` or
+`real_api` and cannot mix modes. No real API measurements were run for this change.
+Local synthetic results and next steps are in [PROGRESS.md](PROGRESS.md).
 
 ## Run a bounded tool-use episode
 
@@ -287,6 +364,12 @@ generate → validate → run → report workflow.
 Tool episode tests cover successful and incorrect answers, mandatory reads,
 path rejection without host access, malformed actions, turn and response limits,
 sanitized errors, trace replay, overwrite protection, and CLI network gating.
+Native tests use events and a virtual retry clock to check request/retry limits,
+fairness, overload, seeded jitter, deadlines, and cancellation. With the HTTP
+extra installed, transport tests also use a loopback-only server for a real
+429/retry exchange and deadline-triggered socket cleanup. Restricted sandboxes
+must permit binding a temporary loopback socket. Without the extra, HTTP tests
+are skipped; install it to run the complete suite.
 
 ## Scope and next step
 
@@ -296,8 +379,8 @@ pass rate is not research evidence. LLM-generated tests, sandboxed coding
 episodes, independent held-out datasets, training, distributed scheduling, and a website
 are not implemented.
 
-The next runtime step is a native asynchronous transport with request deadlines,
-cancellation tests, and server-directed retry delays, using offline HTTP fixtures.
+The next runtime step is provider-wide rate-limit coordination and a bounded
+multi-episode trajectory runner before distributed workers or training.
 The tool-use track also needs a second fixture to test its episode contract.
 See [the architecture note](docs/architecture.md) and
 [the project brief](project_brief.md).

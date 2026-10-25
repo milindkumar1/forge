@@ -1,13 +1,14 @@
 import asyncio
 import json
+import importlib.util
 import unittest
 from email.utils import formatdate
 from unittest.mock import patch
 from dataclasses import replace
 
-try:
+if importlib.util.find_spec("aiohttp") is not None:
     from forge.async_http import AsyncOpenRouterProvider, parse_retry_after
-except ImportError:
+else:
     AsyncOpenRouterProvider = None
 
 from forge.providers import ProviderError, ProviderTimeoutError, RetryableProviderError

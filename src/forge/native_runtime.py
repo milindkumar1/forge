@@ -196,11 +196,13 @@ def validate_native_report(report: Dict[str, Any]) -> None:
                     or type(attempt["retryable"]) is not bool or type(attempt["timed_out"]) is not bool
                     or not duration(attempt["duration_seconds"]) or not duration(attempt["retry_after_seconds"])
                     or (attempt["retryable"] and attempt["error"] is None)
+                    or (not attempt["retryable"] and attempt["retry_after_seconds"] != 0)
                     or (attempt["timed_out"] and not attempt["retryable"])):
                 raise ValueError("invalid native attempt")
             if number < len(attempts):
                 expected_delay = retry_delay(options, index, number, attempt["retry_after_seconds"])
-                if (not attempt["retryable"] or attempt["retry_delay_seconds"] != expected_delay
+                if (not attempt["retryable"] or not duration(attempt["retry_delay_seconds"])
+                        or attempt["retry_delay_seconds"] != expected_delay
                         or attempt["retry_after_seconds"] > options.max_retry_after_seconds):
                     raise ValueError("invalid native retry")
             elif attempt["retry_delay_seconds"] is not None:
@@ -208,7 +210,9 @@ def validate_native_report(report: Dict[str, Any]) -> None:
         last = attempts[-1]
         terminal = result.get("termination")
         if (last["error"] != result["error"] or (result["error"] is not None and result.get("answer") is not None)
-                or sum(a["duration_seconds"] for a in attempts) > result["duration_seconds"]):
+                or sum(a["duration_seconds"] for a in attempts) > result["duration_seconds"]
+                or sum(a["duration_seconds"] + (a["retry_delay_seconds"] or 0) for a in attempts)
+                > result["duration_seconds"] + 1e-9):
             raise ValueError("native attempts disagree with result")
         if not last["retryable"]:
             expected = "answered" if last["error"] is None else "provider_error"
@@ -220,6 +224,8 @@ def validate_native_report(report: Dict[str, Any]) -> None:
             expected = "retry_queue_full"
         if terminal != expected:
             raise ValueError("invalid native termination")
+        if terminal == "retry_queue_full" and runtime["peak_pending_retries"] != options.max_pending_retries:
+            raise ValueError("retry overflow disagrees with queue peak")
         rejections += terminal in ("retry_queue_full", "retry_after_limit")
         total += len(attempts)
     for name, expected in (("attempts", total), ("retries", total - len(report["results"])),
