@@ -111,12 +111,17 @@ async def evaluate_async(config: Config, provider: Provider, suite: TaskSuite = 
 def validate_runtime_report(report: Dict[str, Any]) -> None:
     """Check additive runtime evidence without changing legacy report support."""
     runtime = report["runtime"]
-    if isinstance(runtime, dict) and runtime.get("kind") == "native-async-v1":
+    if isinstance(runtime, dict) and runtime.get("kind") in ("native-async-v1", "native-async-v2"):
         if not isinstance(report.get("suite"), dict) or "tasks" not in report["suite"]:
             raise ValueError("runtime evidence requires a task snapshot")
-        from forge.native_runtime import validate_native_report
+        if runtime["kind"] == "native-async-v2":
+            from forge.admission_reports import validate_coordinated_report
 
-        validate_native_report(report)
+            validate_coordinated_report(report)
+        else:
+            from forge.native_runtime import validate_native_report
+
+            validate_native_report(report)
         return
     if not isinstance(runtime, dict) or runtime.get("kind") != "async-thread-pool-v1":
         raise ValueError("unsupported runtime evidence")

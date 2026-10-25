@@ -14,8 +14,27 @@ preserving `acomplete() -> str` and the synchronous API.
 
 Tests cover bursts, exact expiry, FIFO token fairness, cancellation wakeups,
 retry budget exhaustion, usage debt, shared cooldown, and breaker recovery.
-Next: integrate the coordinator into native scheduler admission without occupying
-request slots while waiting, add reports/CLI, then benchmark simulated quotas.
+`f73abec`: 113 tests passed before the coordinator commit.
+
+## Coordinated runtime increment (2026-10-25)
+
+The native scheduler now accepts a shared coordinator explicitly. CLI controls
+are opt-in (`--coordinate` or quota/failure flags with `--native-async`); existing
+sync/native/thread callers remain compatible. Waiting tickets do not consume
+active request slots. Local fresh/retry alternation and cross-run FIFO admission
+preserve fairness; each retry reacquires request/token quotas and retry budget.
+Cancelled admissions remove tickets; unknown in-flight usage is retained.
+
+`native-async-v2` runtime evidence distinguishes zero-attempt admission rejections
+from provider failures and records per-attempt reservation/usage/admission data.
+Queue mean is the integral of ready-to-admit task backlog divided by elapsed
+time; initial task waiting and retry waiting count, backoff before readiness does
+not. Older report contracts still load. Scope counters are cumulative when a
+coordinator is shared; per-run metrics come from that run's attempts.
+
+Virtual-clock tests verify shared-run fairness, RPM/TPM windows, 429 cooldown of
+fresh calls and retries, aggregate retry caps, breaker shedding, admission expiry,
+and cancellation. Next: simulated-limit benchmark and documentation.
 
 ## Native HTTP increment (2026-10-25)
 
