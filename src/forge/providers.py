@@ -2,6 +2,7 @@
 
 import json
 import os
+import urllib.error
 import urllib.request
 from typing import Protocol
 
@@ -12,7 +13,12 @@ class ProviderError(Exception):
     """A sanitized provider failure that can safely appear in reports."""
 
 
+class RetryableProviderError(ProviderError):
+    """A transient transport failure; retry only with an explicit attempt budget."""
+
+
 class Provider(Protocol):
+    # Concurrent runners share this object: implementations must be thread-safe.
     def complete(self, prompt: str) -> str:
         ...
 
@@ -72,6 +78,13 @@ class OpenRouterProvider:
             if not isinstance(content, str):
                 raise ValueError("non-text response")
             return content
+        except urllib.error.HTTPError as exc:
+            error_type = RetryableProviderError if exc.code in (429, 500, 502, 503, 504) else ProviderError
+            if exc.fp is not None:
+                exc.close()
+            raise error_type("OpenRouter HTTP request failed") from exc
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+            raise RetryableProviderError("OpenRouter transport request failed") from exc
         except (OSError, ValueError, KeyError, IndexError, TypeError) as exc:
             # Do not include the response body, request headers, or exception text.
             raise ProviderError("OpenRouter request failed or returned an invalid response") from exc

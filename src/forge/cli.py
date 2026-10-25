@@ -1,6 +1,7 @@
 """The init -> run -> report command-line path."""
 
 import argparse
+import asyncio
 import sys
 from pathlib import Path
 from typing import List, Optional
@@ -9,6 +10,7 @@ from forge.config import Config, load_config, write_json
 from forge.evaluation import evaluate, load_report
 from forge.generation import generate_suite
 from forge.providers import make_provider
+from forge.runtime import RuntimeOptions, evaluate_async
 from forge.suites import DEFAULT_SUITE, load_suite, validate_suite
 from forge.tool_episode import evaluate_tool
 
@@ -27,6 +29,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     run.add_argument("--output", type=Path, default=Path("forge-results.json"))
     run.add_argument("--allow-network", action="store_true", help="allow paid OpenRouter inference")
     run.add_argument("--tasks", type=Path, help="load a versioned JSON suite instead of built-in tasks")
+    run.add_argument("--concurrency", type=int, help="use bounded async runner with 1-64 workers")
+    run.add_argument("--max-attempts", type=int, default=1, help="attempts per task, 1-5; requires --concurrency")
+    run.add_argument("--retry-delay", type=float, default=0.25, help="initial backoff seconds, 0-60; requires --concurrency")
     tool = commands.add_parser("run-tool", help="run the bounded inventory tool-use fixture")
     tool.add_argument("--config", type=Path, default=Path("forge.json"))
     tool.add_argument("--output", type=Path, default=Path("forge-tool-results.json"))
@@ -74,9 +79,16 @@ def main(argv: Optional[List[str]] = None) -> int:
             if args.command == "run-tool":
                 result = evaluate_tool(config, make_provider(config, allow_network=args.allow_network))
             else:
+                options = None
+                if args.concurrency is not None:
+                    options = RuntimeOptions(args.concurrency, args.max_attempts, args.retry_delay)
+                elif args.max_attempts != 1 or args.retry_delay != 0.25:
+                    raise ValueError("retry options require --concurrency")
                 suite = load_suite(args.tasks) if args.tasks is not None else DEFAULT_SUITE
                 validate_suite(suite).require_valid()
-                result = evaluate(config, make_provider(config, allow_network=args.allow_network), suite)
+                provider = make_provider(config, allow_network=args.allow_network)
+                result = (evaluate(config, provider, suite) if options is None else
+                          asyncio.run(evaluate_async(config, provider, suite, options)))
             write_json(args.output, result)
             summary = result["summary"]
             print("{passed}/{total} passed; {errors} provider errors. Saved {path}".format(

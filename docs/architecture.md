@@ -78,7 +78,7 @@ trigger paid inference. The evaluator also validates direct Python callers,
 preserving the same guarantee before any provider call. This repeats a small
 preflight in the CLI path in exchange for protecting both entry points.
 
-The evaluator runs tasks sequentially and owns verification; a provider cannot
+The default evaluator runs tasks sequentially and owns verification; a provider cannot
 choose its own pass/fail verdict. Timings measure the complete provider call,
 including response parsing, using a monotonic clock. They are not token or GPU
 performance measurements. The report reader checks result statuses, unique
@@ -113,6 +113,47 @@ their content is deliberately not preserved. Replay validates internal
 consistency and does not authenticate provider origin. Fixture version 1 is
 fixed in code; a future fixture revision needs an explicit compatibility policy.
 The existing text suite schema and report reader remain supported.
+
+## Bounded asynchronous text runner
+
+`runtime.py` adds an opt-in asyncio scheduler over the same blocking provider
+protocol. A dedicated `ThreadPoolExecutor` and a fixed set of coroutine workers
+both have the configured concurrency bound. Workers pull from one iterator on
+the event-loop thread, then await one submitted request at a time. Only
+O(concurrency) coroutine tasks and provider futures exist; the suite and ordered
+result buffer remain O(task count). No semaphore hides an unbounded executor
+queue. Callers supplying a custom provider must make concurrent calls safe.
+
+Task indices choose result slots, so completion order cannot change suite order
+or provenance. Verification stays in the evaluator. A shared report builder
+keeps the sequential and concurrent evidence contracts aligned. Additive runtime
+fields retain schema-1 readability and are checked on load. Timings use a
+monotonic clock; peak in-flight counts submitted requests, not measured server
+activity. Completed-task throughput includes failed tasks and excludes validation.
+
+Only a `RetryableProviderError` allows retry. OpenRouter maps selected HTTP
+statuses and transport errors to that subclass; the base error remains permanent.
+Malformed output and wrong answers do not retry. The default attempt budget is
+one; explicit retries use capped exponential backoff while retaining the worker
+slot. This sacrifices some utilization during an outage to keep admission and
+retry pressure bounded. Backoff currently has no jitter or server-directed delay.
+
+Unexpected errors propagate. All worker coroutines are cancelled and awaited,
+then the executor joins any running calls. Cancellation follows the same path,
+so a run never leaves its provider threads running after it returns. Joining can
+block the event loop during failure cleanup. Providers must bound their own I/O;
+socket timeouts do not establish an end-to-end deadline. This bridge avoids a
+new HTTP dependency while preserving existing implementations, at the cost of
+thread resources and delayed cancellation. Native asynchronous HTTP is the next
+step for enforceable request deadlines and responsive cleanup.
+
+Primary references: Python's [executor integration](https://docs.python.org/3.9/library/asyncio-eventloop.html#executing-code-in-thread-or-process-pools)
+and [executor shutdown semantics](https://docs.python.org/3.9/library/concurrent.futures.html#concurrent.futures.Executor.shutdown).
+Running futures cannot be cancelled; the cleanup design follows that established
+constraint. The synthetic benchmark checks overlap on this host. Whether this
+improves real model throughput remains an untested hypothesis; batching, server
+capacity, and rate limits can dominate real workloads. No distributed execution
+or GPU performance claim follows from the experiment.
 
 The tradeoff is a small JSON-text action contract versus native provider tool
 calling. Reusing the provider boundary keeps this offline slice small and lets

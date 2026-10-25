@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 from forge import __version__
 from forge.config import Config
 from forge.providers import Provider, ProviderError
-from forge.suites import DEFAULT_SUITE, TaskSuite, parse_suite, validate_suite
+from forge.suites import DEFAULT_SUITE, TaskSuite, Validation, parse_suite, validate_suite
 
 
 def summarize(results: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -42,6 +42,12 @@ def evaluate(config: Config, provider: Provider, suite: TaskSuite = DEFAULT_SUIT
             "answer": answer, "passed": error is None and answer is not None and task.verify(answer),
             "error": error, "duration_seconds": perf_counter() - begin,
         })
+    return build_report(config, suite, validation, started, results)
+
+
+def build_report(config: Config, suite: TaskSuite, validation: Validation,
+                 started: str, results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Shared evidence contract for sequential and concurrent text evaluations."""
     return {
         "schema_version": 1,
         "forge_version": __version__,
@@ -109,4 +115,8 @@ def load_report(path: Path) -> Dict[str, Any]:
             expected_pass = result["error"] is None and answer == task.expected
             if result["passed"] != expected_pass:
                 raise ValueError("report verdict does not match its answer")
+    if "runtime" in report:
+        from forge.runtime import validate_runtime_report
+
+        validate_runtime_report(report)
     return report

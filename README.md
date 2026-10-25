@@ -86,6 +86,64 @@ tests. Different seeds can overlap and share the same templates. They do not
 establish independent training/evaluation splits or demonstrate generalization
 beyond the known mutation checks.
 
+## Concurrent text evaluation
+
+The sequential runner remains the default. Opt into the bounded asynchronous
+runner for built-in or generated text suites:
+
+```sh
+.venv/bin/forge run --concurrency 4 --output concurrent-results.json
+.venv/bin/forge report --input concurrent-results.json
+```
+
+`--concurrency` accepts 1-64 workers. The runner uses asyncio and a dedicated
+thread pool to overlap blocking provider calls. There are at most that many
+active rollouts and submitted calls; results retain suite order. Providers used
+through the Python API must be thread-safe. `run-tool` remains sequential.
+
+Retries default to one attempt. With `--concurrency`, optionally set
+`--max-attempts 3 --retry-delay 0.25`. Attempts are bounded to 1-5 total per task;
+initial delay must be finite in [0, 60] seconds. Exponential backoff is
+`min(60, initial_delay * 2**(attempt_number - 1))`, without jitter, and holds the
+rollout's worker slot. Only `RetryableProviderError` triggers another attempt.
+OpenRouter classifies HTTP 429/500/502/503/504, URL transport failures, timeouts,
+and connection failures as retryable. Authentication errors, malformed responses,
+non-text responses, and wrong answers do not retry. Retried requests can incur
+additional charges, including after an ambiguous transport failure. Network
+access still requires explicit `--allow-network`; no live calls were used here.
+Server `Retry-After`, rate limiting, retry jitter, and request deduplication are
+not implemented.
+
+Schema-1 reports add `runtime` settings, total attempts, peak submitted requests,
+elapsed time, and completed tasks/second. Per-task evidence adds initial queue
+wait and attempt outcomes/durations. Task duration includes retries and backoff
+but excludes initial queue wait; attempt duration includes thread dispatch and
+the provider call. Runtime elapsed time includes pool setup/cleanup, excluding
+suite validation and report assembly. Throughput counts all completed tasks,
+including failures. The reader checks attempt and metric consistency while
+retaining support for older reports.
+
+Cancellation and unexpected programming errors stop admission and join running
+threads before propagating; no partial report is written. Cleanup may block the
+event loop until those calls finish. The provider owns I/O timeouts (OpenRouter
+uses a 30-second socket timeout, not an end-to-end deadline). A running Python
+thread cannot be forcibly cancelled. This is a local I/O concurrency runtime;
+it has no durable recovery, batching, native async HTTP, or distributed workers.
+
+Run the reproducible offline experiment:
+
+```sh
+.venv/bin/python benchmarks/runtime.py --output /tmp/forge-runtime-benchmark.json
+```
+
+It compares the original sequential runner with async concurrency 1 and 4 over
+24 seeded tasks, adding a 10 ms blocking sleep per request, with three rotated
+repetitions and unmeasured warmups. JSON saves environment, suite digest, raw
+samples, median wall times, throughput, and task-duration median/p95. Outputs
+refuse overwrite. These durations include the simulated wait; they are not
+GPU, model-serving, or network latency measurements. Measured results and next
+steps are recorded in [PROGRESS.md](PROGRESS.md).
+
 ## Run a bounded tool-use episode
 
 ```sh
@@ -201,9 +259,10 @@ the config. Supply `OPENROUTER_API_KEY` in your environment, then run:
 .venv/bin/forge run --allow-network --output openrouter-results.json
 ```
 
-Both the flag and environment key are required. This sends one sequential API
+Both the flag and environment key are required. By default this sends one sequential API
 request per task (six for the built-in suite)
-and may incur charges. There are no retries. The adapter has offline
+and may incur charges. `--concurrency` enables overlapping requests and optional
+bounded retries as described above. The adapter has offline
 tests using a fake HTTP transport; live compatibility has not been verified.
 The report records the requested model ID, not a resolved model revision or
 provider routing. Temperature zero does not guarantee remote reproducibility.
@@ -234,10 +293,11 @@ sanitized errors, trace replay, overwrite protection, and CLI network gating.
 These six public development fixtures are deliberately small. Exact string
 matching penalizes extra formatting. The mock is a plumbing baseline, and its
 pass rate is not research evidence. LLM-generated tests, sandboxed coding
-episodes, independent held-out datasets, training, scheduling, and a website
+episodes, independent held-out datasets, training, distributed scheduling, and a website
 are not implemented.
 
-The next small step is a second fixture-backed tool-use task and explicit
-failure cases, to test whether the episode contract generalizes beyond one lookup.
+The next runtime step is a native asynchronous transport with request deadlines,
+cancellation tests, and server-directed retry delays, using offline HTTP fixtures.
+The tool-use track also needs a second fixture to test its episode contract.
 See [the architecture note](docs/architecture.md) and
 [the project brief](project_brief.md).
