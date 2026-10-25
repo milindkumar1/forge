@@ -166,7 +166,8 @@ class CoordinatedRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_fresh_and_retry_fairness_survives_multiple_rate_windows(self):
         clock = ManualClock()
-        c = ProviderCoordinator(AdmissionOptions(requests_per_minute=2, failure_threshold=0), clock=clock)
+        c = ProviderCoordinator(AdmissionOptions(requests_per_minute=2, failure_threshold=0,
+                                                admission_timeout_seconds=600), clock=clock)
         counts, starts = {}, []
 
         class Flaky(AsyncMockProvider):
@@ -210,6 +211,40 @@ class CoordinatedRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(c._waiters)
         ticket = c.enqueue(1, retry=False)
         self.assertEqual(c.decide(ticket).delay, 60)
+
+    async def test_ready_retry_waiting_on_quota_still_occupies_pending_retry_budget(self):
+        clock = ManualClock()
+        c = ProviderCoordinator(AdmissionOptions(requests_per_minute=2, failure_threshold=0), clock=clock)
+        release = asyncio.Event()
+        counts = {}
+
+        class Mixed(AsyncMockProvider):
+            async def acomplete(self, prompt):
+                counts[prompt] = counts.get(prompt, 0) + 1
+                if counts[prompt] == 1 and prompt in [t.prompt for t in DEFAULT_SUITE.tasks[:2]]:
+                    if prompt == DEFAULT_SUITE.tasks[1].prompt:
+                        await release.wait()
+                    raise RetryableProviderError("transient")
+                return await super().acomplete(prompt)
+
+        job = asyncio.create_task(evaluate_native(Config(), Mixed(), options=NativeRuntimeOptions(
+            concurrency=2, max_attempts=2, retry_delay_seconds=0, max_pending_retries=1), coordinator=c))
+        try:
+            await drain()
+            self.assertTrue(c._waiters[0].retry)
+            release.set()
+            await drain()
+            for _ in range(3):
+                clock.advance(60)
+                await drain()
+            report = await job
+        finally:
+            job.cancel()
+            await asyncio.gather(job, return_exceptions=True)
+        self.assertEqual(report["results"][1]["termination"], "retry_queue_full")
+        self.assertEqual(report["runtime"]["peak_pending_retries"], 1)
+        self.assertEqual(report["runtime"]["retries"], 1)
+        validate_coordinated_report(report)
 
     async def test_cancellation_settles_active_reservations_without_refunding_unknown_usage(self):
         entered = asyncio.Queue()
@@ -262,6 +297,7 @@ class CoordinatedRuntimeTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(job, return_exceptions=True)
         self.assertEqual(report["runtime"]["attempts"], 1)
         self.assertEqual(report["runtime"]["admission_rejections"], 5)
+        self.assertEqual(report["runtime"]["duration_seconds"], 2)
         validate_coordinated_report(report)
         c = ProviderCoordinator(AdmissionOptions(tokens_per_minute=1), clock=ManualClock())
         report = await evaluate_native(Config(), AsyncMockProvider(), coordinator=c)

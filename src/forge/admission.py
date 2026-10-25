@@ -106,12 +106,15 @@ class ProviderCoordinator:
             self._changed.set()
         self._changed = None
 
-    def enqueue(self, tokens: int, *, retry: bool) -> Optional[Ticket]:
+    def enqueue(self, tokens: int, *, retry: bool, ready_at: Optional[float] = None) -> Optional[Ticket]:
         if type(tokens) is not int or tokens < 1 or type(retry) is not bool:
             raise ValueError("invalid admission reservation")
         if len(self._waiters) >= self.options.max_waiters:
             return None
-        ticket = Ticket(tokens, retry, self.clock.now())
+        now = self.clock.now()
+        if ready_at is not None and (type(ready_at) not in (int, float) or not math.isfinite(ready_at) or ready_at > now):
+            raise ValueError("invalid admission readiness timestamp")
+        ticket = Ticket(tokens, retry, now if ready_at is None else ready_at)
         self._waiters.append(ticket)
         self.peak_waiters = max(self.peak_waiters, len(self._waiters))
         self._notify()
@@ -127,8 +130,8 @@ class ProviderCoordinator:
             self._requests.popleft()
         while self._retries and self._retries[0] <= now - 60:
             self._retries.popleft()
-        self._tokens = [charge for charge in self._tokens
-                        if charge.expires_at is None or charge.expires_at > now]
+        self._tokens = [charge for charge in self._tokens if charge.tokens and
+                        (charge.expires_at is None or charge.expires_at > now)]
 
     def decide(self, ticket: Ticket) -> Decision:
         if ticket not in self._waiters:

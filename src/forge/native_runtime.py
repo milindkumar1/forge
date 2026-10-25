@@ -11,7 +11,7 @@ from time import perf_counter
 from typing import Any, Dict, List, Optional, Tuple, cast
 
 from forge.config import Config
-from forge.admission import Permit, ProviderCoordinator, Ticket
+from forge.admission import Clock, Permit, ProviderCoordinator, Ticket
 from forge.evaluation import build_report
 from forge.providers import AsyncProvider, Completion, ProviderError, ProviderRateLimitError, ProviderTimeoutError, RetryableProviderError
 from forge.runtime import RuntimeOptions
@@ -53,12 +53,17 @@ class _State:
 
 async def evaluate_native(config: Config, provider: AsyncProvider, suite: TaskSuite = DEFAULT_SUITE,
                           options: NativeRuntimeOptions = NativeRuntimeOptions(), *,
-                          coordinator: Optional[ProviderCoordinator] = None) -> Dict[str, Any]:
+                          coordinator: Optional[ProviderCoordinator] = None,
+                          clock: Optional[Clock] = None) -> Dict[str, Any]:
     validation = validate_suite(suite)
     validation.require_valid()
     started_at = datetime.now(timezone.utc).isoformat()
-    now = coordinator.clock.now if coordinator is not None else perf_counter
-    sleep = coordinator.clock.sleep if coordinator is not None else asyncio.sleep
+    if coordinator is not None:
+        if clock is not None and clock is not coordinator.clock:
+            raise ValueError("scheduler and coordinator must share one clock")
+        clock = coordinator.clock
+    now = clock.now if clock is not None else perf_counter
+    sleep = clock.sleep if clock is not None else asyncio.sleep
     begin = now()
     states = [_State() for _ in suite.tasks]
     results: List[Optional[Dict[str, Any]]] = [None] * len(suite.tasks)
@@ -137,8 +142,7 @@ async def evaluate_native(config: Config, provider: AsyncProvider, suite: TaskSu
             "queue_seconds": (state.started if state.started is not None else end) - begin,
             "duration_seconds": end - state.started if state.started is not None else 0.0,
         }
-        if coordinator is not None:
-            results[index]["admission_seconds"] = state.admission_seconds
+        results[index]["admission_seconds"] = state.admission_seconds
 
     try:
         while fresh < len(suite.tasks) or active or pending or candidate is not None:
@@ -160,7 +164,8 @@ async def evaluate_native(config: Config, provider: AsyncProvider, suite: TaskSu
                 index, is_retry, ready_at = candidate
                 if coordinator is not None:
                     if ticket is None:
-                        ticket = coordinator.enqueue(coordinator.options.reservation(suite.tasks[index].prompt), retry=is_retry)
+                        ticket = coordinator.enqueue(coordinator.options.reservation(suite.tasks[index].prompt),
+                                                     retry=is_retry, ready_at=ready_at)
                         if ticket is None:
                             states[index].admission_seconds += now() - ready_at
                             finish(index, None, "provider admission rejected", "admission_queue_full")
@@ -194,10 +199,10 @@ async def evaluate_native(config: Config, provider: AsyncProvider, suite: TaskSu
                 if delay is not None:
                     await (coordinator.wait(delay) if coordinator is not None else sleep(delay))
                 continue
-            if coordinator is None:
+            if coordinator is None and (clock is None or delay is None):
                 done, _ = await asyncio.wait(active, timeout=delay, return_when=asyncio.FIRST_COMPLETED)
             else:
-                waiter = asyncio.create_task(coordinator.wait(delay))
+                waiter = asyncio.create_task(coordinator.wait(delay) if coordinator is not None else sleep(delay))
                 try:
                     done, _ = await asyncio.wait([*active, waiter], return_when=asyncio.FIRST_COMPLETED)
                     done.discard(waiter)
@@ -216,14 +221,14 @@ async def evaluate_native(config: Config, provider: AsyncProvider, suite: TaskSu
                     finish(index, None, error, "attempts_exhausted")
                 elif attempt["retry_after_seconds"] > options.max_retry_after_seconds:
                     finish(index, None, error, "retry_after_limit")
-                elif len(pending) >= options.max_pending_retries:
+                elif len(pending) + int(candidate is not None and candidate[1]) >= options.max_pending_retries:
                     finish(index, None, error, "retry_queue_full")
                 else:
                     wait = retry_delay(options, index, attempt["number"], attempt["retry_after_seconds"])
                     attempt["retry_delay_seconds"] = wait
                     heapq.heappush(pending, (now() + wait, sequence, index))
                     sequence += 1
-                    peak_pending = max(peak_pending, len(pending))
+                    peak_pending = max(peak_pending, len(pending) + int(candidate is not None and candidate[1]))
     finally:
         if coordinator is not None and ticket is not None:
             coordinator.cancel(ticket)
@@ -245,6 +250,8 @@ async def evaluate_native(config: Config, provider: AsyncProvider, suite: TaskSu
         "retry_rejections": sum(r["termination"] in ("retry_queue_full", "retry_after_limit")
                                 for r in completed_results),
         "completed_tasks_per_second": len(results) / elapsed,
+        "peak_admission_queue": peak_admission_queue,
+        "mean_admission_queue": sum(r["admission_seconds"] for r in completed_results) / elapsed,
     }
     if coordinator is not None:
         from forge.admission_reports import ADMISSION_REJECTIONS
