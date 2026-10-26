@@ -5,6 +5,7 @@ from dataclasses import asdict
 from typing import Any, Dict
 
 from forge.admission import AdmissionOptions
+from forge.inference import parse_inference_info
 
 ADMISSION_REJECTIONS = {"admission_queue_full", "admission_timeout", "token_budget_exceeded",
                         "retry_budget_exhausted", "circuit_open"}
@@ -53,7 +54,7 @@ def validate_coordinated_report(report: Dict[str, Any]) -> None:
             fields = {"number", "error", "retryable", "timed_out", "retry_after_seconds", "retry_delay_seconds",
                       "duration_seconds", "admission_seconds", "admitted_at_seconds", "reserved_tokens",
                       "charged_tokens", "reported_tokens", "rate_limited"}
-            if (not isinstance(attempt, dict) or set(attempt) != fields
+            if (not isinstance(attempt, dict) or set(attempt) not in (fields, fields | {"inference"})
                     or type(attempt["number"]) is not int or attempt["number"] != number
                     or any(type(attempt[key]) is not bool for key in ("retryable", "timed_out", "rate_limited"))
                     or any(not duration(attempt[key]) for key in ("duration_seconds", "admission_seconds",
@@ -68,6 +69,10 @@ def validate_coordinated_report(report: Dict[str, Any]) -> None:
                     or ((attempt["timed_out"] or attempt["rate_limited"]) and not attempt["retryable"])
                     or attempt["admitted_at_seconds"] + attempt["duration_seconds"] > elapsed + 1e-9):
                 raise ValueError("invalid coordinated attempt")
+            if "inference" in attempt:
+                info = parse_inference_info(attempt["inference"], attempt["reported_tokens"])
+                if info.stream is not None and info.stream.duration_seconds > attempt["duration_seconds"] + 1e-9:
+                    raise ValueError("stream duration exceeds its attempt")
             scheduled = number < len(attempts) or (number == len(attempts) and rejected)
             if scheduled:
                 if (not attempt["retryable"] or number >= options.max_attempts

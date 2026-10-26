@@ -3,10 +3,11 @@
 import argparse
 import asyncio
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import List, Optional
 
-from forge.config import Config, LocalConfig, ProviderConfig, load_config, write_json
+from forge.config import Config, LocalConfig, ProviderConfig, load_config, validate_local_config, write_json
 from forge.admission import AdmissionOptions, ProviderCoordinator
 from forge.evaluation import evaluate, load_report
 from forge.generation import generate_suite
@@ -19,6 +20,13 @@ from forge.tool_episode import evaluate_tool
 
 async def run_native(config: ProviderConfig, suite: TaskSuite, options: NativeRuntimeOptions,
                      allow_network: bool, admission: Optional[AdmissionOptions] = None) -> dict:
+    validate_suite(suite).require_valid()
+    if isinstance(config, LocalConfig):
+        validate_local_config(config)
+        admission = admission or AdmissionOptions(failure_threshold=0)
+        if admission.tokens_per_request is None:
+            reservation = max(len(task.prompt.encode("utf-8")) for task in suite.tasks) + 64 + config.max_tokens
+            admission = replace(admission, tokens_per_request=reservation)
     coordinator = ProviderCoordinator(admission) if admission is not None else None
     if config.provider == "mock":
         return await evaluate_native(config, AsyncMockProvider(config.mock_mode), suite, options, coordinator=coordinator)
@@ -30,8 +38,6 @@ async def run_native(config: ProviderConfig, suite: TaskSuite, options: NativeRu
                 "max_connections": options.concurrency}
     provider_instance = (AsyncLocalProvider(config, **settings) if isinstance(config, LocalConfig) else
                          AsyncOpenRouterProvider(config.model, **settings))
-    if isinstance(config, LocalConfig) and coordinator is None:
-        coordinator = ProviderCoordinator(AdmissionOptions(failure_threshold=0))
     async with provider_instance as provider:
         return await evaluate_native(config, provider, suite, options, coordinator=coordinator)
 

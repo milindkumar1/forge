@@ -5,9 +5,10 @@ import json
 import math
 import os
 import time
+from time import perf_counter
 from datetime import timezone
 from email.utils import parsedate_to_datetime
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from forge.config import LocalConfig
@@ -90,6 +91,7 @@ class _AsyncChatProvider:
 
     async def _request(self, prompt: str) -> Completion:
         assert self._session is not None
+        started = self.now()
         async with self._session.post(
             self.endpoint(), json=self.payload(prompt), headers=self.headers(), allow_redirects=False,
         ) as response:
@@ -99,18 +101,26 @@ class _AsyncChatProvider:
                     retry_after_seconds=parse_retry_after(response.headers.get("Retry-After")))
             if response.status != 200:
                 raise ProviderError("provider HTTP request failed")
-            body = bytearray()
-            async for chunk in response.content.iter_chunked(65536):
-                body.extend(chunk)
-                if len(body) > MAX_RESPONSE_BYTES:
-                    raise ProviderError("provider response too large")
-            payload = json.loads(body)
-            answer = payload["choices"][0]["message"]["content"]
-            if not isinstance(answer, str):
-                raise ProviderError("provider returned a non-text answer")
-            usage = payload.get("usage")
-            total = usage.get("total_tokens") if isinstance(usage, dict) else None
-            return Completion(answer, total)
+            return await self.read_response(response, started)
+
+    def now(self) -> float:
+        return perf_counter()
+
+    async def read_response(self, response: aiohttp.ClientResponse, started: float) -> Completion:
+        body = bytearray()
+        async for chunk in response.content.iter_chunked(65536):
+            body.extend(chunk)
+            if len(body) > MAX_RESPONSE_BYTES:
+                raise ProviderError("provider response too large")
+        return self.decode_response(json.loads(body))
+
+    def decode_response(self, payload: dict) -> Completion:
+        answer = payload["choices"][0]["message"]["content"]
+        if not isinstance(answer, str):
+            raise ProviderError("provider returned a non-text answer")
+        usage = payload.get("usage")
+        total = usage.get("total_tokens") if isinstance(usage, dict) else None
+        return Completion(answer, total)
 
     def endpoint(self) -> str:
         raise NotImplementedError
@@ -143,19 +153,45 @@ class AsyncOpenRouterProvider(_AsyncChatProvider):
 
 class AsyncLocalProvider(_AsyncChatProvider):
     def __init__(self, config: "LocalConfig", *, allow_network: bool = False,
-                 request_timeout_seconds: float = 30.0, max_connections: int = 4) -> None:
+                 request_timeout_seconds: float = 30.0, max_connections: int = 4,
+                 clock: Callable[[], float] = perf_counter) -> None:
         from forge.config import validate_local_config
 
         validate_local_config(config)
         if not allow_network:
             raise ValueError("local inference requires explicit --allow-network")
-        if config.stream:
-            raise ValueError("streaming support is not enabled yet")
         super().__init__(config.model, request_timeout_seconds=request_timeout_seconds, max_connections=max_connections)
         self.config = config
+        self._clock = clock
 
     def endpoint(self) -> str:
         return self.config.base_url.rstrip("/") + "/chat/completions"
 
     def payload(self, prompt: str) -> dict:
-        return dict(super().payload(prompt), max_tokens=self.config.max_tokens)
+        payload = dict(super().payload(prompt), max_tokens=self.config.max_tokens, seed=0, stream=self.config.stream)
+        if self.config.stream:
+            payload["stream_options"] = {"include_usage": True}
+        return payload
+
+    def now(self) -> float:
+        return self._clock()
+
+    def decode_response(self, payload: dict) -> Completion:
+        from forge.inference import InferenceInfo, token_usage
+
+        completion = super().decode_response(payload)
+        model = payload.get("model")
+        if model is not None and model != self.model:
+            raise ProviderError("provider returned an unexpected model")
+        total, prompt, output = token_usage(payload)
+        return Completion(completion.text, total, InferenceInfo(prompt, output, model))
+
+    async def read_response(self, response: aiohttp.ClientResponse, started: float) -> Completion:
+        if not self.config.stream:
+            return await super().read_response(response, started)
+        from forge.streaming import read_chat_stream
+
+        if response.headers.get("Content-Type", "").split(";")[0].strip().lower() != "text/event-stream":
+            raise ProviderError("provider did not return an event stream")
+        return await read_chat_stream(response.content.iter_chunked(65536), model=self.model,
+                                      now=self.now, started=started)

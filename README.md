@@ -198,6 +198,11 @@ The example contains placeholders, not a measured model configuration. Declared
 revisions/license/dtype/runtime are operator provenance, not server attestation.
 Local runs use coordinated evidence to retain reported token usage; without
 explicit coordination settings they impose no RPM/TPM limits or circuit breaker.
+The example uses streaming. Reports record usage and first-content/delta-arrival
+timings, require a valid finish and `[DONE]`, and reject truncated streams.
+Content deltas can bundle tokens; these arrival times are not exact inter-token
+latency. The generation contract fixes temperature and seed to zero and records
+the output token cap. Reproducibility still depends on the declared server/model.
 
 ## Shared provider admission and failure controls
 

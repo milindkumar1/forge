@@ -11,10 +11,27 @@ Legacy configs and synchronous providers remain supported. Local runs retain
 reported usage through coordinated evidence, with quotas/breaker disabled by
 default (the retry budget remains bounded).
 
-136 tests passed, 0 failures/errors, including actual loopback evaluation and
+`06b20b5`: 136 tests passed, 0 failures/errors, including actual loopback evaluation and
 usage/report roundtrip. No model server, model download or GPU experiment was
 run. Next in this slice: bounded SSE parsing, content-arrival instrumentation,
 and a reproducible local endpoint concurrency sweep.
+
+## Streaming increment (2026-10-26)
+
+Added bounded incremental SSE parsing (UTF-8 fragments/BOM, CR/LF/CRLF, comments,
+multiline data), validated finish/[DONE] handling, and usage-only final events.
+Local JSON/stream responses retain prompt/output/total usage and response model;
+unexpected model IDs fail. Content arrival offsets are monotonic and explicitly
+measured per nonempty content delta, not per token. No partial stream is returned
+as a successful completion after EOF, deadline, or cancellation.
+
+Local runtime v2 attempts optionally include validated inference evidence; old
+reports remain supported. Reservation estimates include the configured output
+cap and largest suite prompt. The example enables streaming with fixed seed 0
+and temperature 0. 144 tests passed, 0 failures/errors, including stream/report
+roundtrip, malformed/tampered evidence, bounded parsing, and cleanup tests.
+Next in this slice: endpoint concurrency sweep, reproducibility docs and smoke
+validation. No actual model/GPU measurements have been performed.
 
 ## Current state (2026-10-25)
 

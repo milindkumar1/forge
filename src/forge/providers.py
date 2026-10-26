@@ -9,6 +9,7 @@ from typing import Optional
 from typing import Protocol
 
 from forge.config import Config, ProviderConfig
+from forge.inference import InferenceInfo
 
 
 class ProviderError(Exception):
@@ -35,11 +36,16 @@ class ProviderRateLimitError(RetryableProviderError):
 class Completion:
     text: str
     total_tokens: Optional[int] = None
+    inference: Optional[InferenceInfo] = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.text, str) or (self.total_tokens is not None and
                 (type(self.total_tokens) is not int or self.total_tokens < 0)):
             raise ValueError("invalid completion or token usage")
+        if self.inference is not None:
+            if not isinstance(self.inference, InferenceInfo):
+                raise ValueError("invalid completion inference metadata")
+            self.inference.validate_total(self.total_tokens)
 
 
 class AsyncProvider(Protocol):

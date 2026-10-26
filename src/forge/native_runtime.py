@@ -86,6 +86,7 @@ async def evaluate_native(config: ProviderConfig, provider: AsyncProvider, suite
         retryable = timed_out = False
         floor = 0.0
         actual_tokens = None
+        inference = None
         rate_limited = False
         try:
             usage_method = getattr(provider, "acomplete_with_usage", None) if coordinator is not None else None
@@ -94,7 +95,7 @@ async def evaluate_native(config: ProviderConfig, provider: AsyncProvider, suite
                                                     options.request_timeout_seconds)
                 if not isinstance(completion, Completion):
                     raise ProviderError("invalid completion metadata")
-                answer, actual_tokens = completion.text, completion.total_tokens
+                answer, actual_tokens, inference = completion.text, completion.total_tokens, completion.inference
             else:
                 answer = await asyncio.wait_for(provider.acomplete(suite.tasks[index].prompt),
                                                 options.request_timeout_seconds)
@@ -130,6 +131,8 @@ async def evaluate_native(config: ProviderConfig, provider: AsyncProvider, suite
             attempt.update(admission_seconds=admission_seconds, admitted_at_seconds=call_begin - begin,
                            reserved_tokens=reserved, charged_tokens=permit.tokens,
                            reported_tokens=actual_tokens, rate_limited=rate_limited)
+            if inference is not None:
+                attempt["inference"] = inference.to_dict()
         return answer, attempt
 
     def finish(index: int, answer: Optional[str], error: Optional[str], termination: str) -> None:

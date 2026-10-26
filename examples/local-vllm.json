@@ -9,5 +9,5 @@
   "dtype": "replace-with-server-dtype",
   "server_version": "replace-with-pinned-vllm-version",
   "max_tokens": 256,
-  "stream": false
+  "stream": true
 }
