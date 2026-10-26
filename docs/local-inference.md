@@ -35,9 +35,29 @@ results. The artifact preserves Python/platform/aiohttp/Forge versions, client
 source hashes, declared model/runtime configuration, suite digest, policy, raw
 reports, and nearest-rank p50/p95/p99 metrics. `measurement_kind` is `endpoint`;
 it does not attest that the endpoint ran a real model or a GPU. Tests use an
-explicitly named fixture model. GPU telemetry is null, not invented. Benchmark
-artifacts contain embedded evaluation reports; `forge report` reads individual
-evaluation reports, not the outer benchmark wrapper.
+explicitly named fixture model. GPU telemetry is null unless collected explicitly.
+Benchmark artifacts contain embedded evaluation reports; `forge report` reads
+individual evaluation reports, not the outer benchmark wrapper.
+
+Add `--collect-telemetry` to opt in to a one-second `nvidia-smi` sampler and
+before/after snapshots of selected Prometheus samples from the local server's
+`/metrics` endpoint:
+
+```sh
+.venv/bin/python benchmarks/local_inference.py --config local.json --allow-network \
+  --concurrency 1 2 4 --repeats 3 --collect-telemetry \
+  --output /tmp/forge-local-telemetry.json
+```
+
+Telemetry collection is best-effort and does not fail an inference sweep when
+`nvidia-smi`, the vLLM metrics endpoint, or individual counters are unavailable.
+Raw GPU samples are bounded to 10,000 rows; metrics responses are capped at 2 MB.
+Unavailable fields remain null, and server snapshots preserve Prometheus labels.
+Counters/histograms are cumulative snapshots rather than per-request traces;
+compare before/after values for aggregate deltas. GPU samples are host readings
+at one-second intervals and may be reported as `N/A` by WSL. Collection adds a
+small process and HTTP scrape overhead, so compare measurements with the same
+telemetry setting enabled.
 
 ## Timing and usage semantics
 
@@ -68,12 +88,12 @@ Explicit admission flags can override this policy and will appear in reports.
 
 ## Next hardware experiment
 
-Use a pinned checkpoint and server build on existing authorized hardware. Record
-GPU model/count, memory, driver/CUDA, launch settings and workload lengths. Add
-server/GPU telemetry and a token-aligned timing path, then compare equivalent
-workloads with [vLLM serving](https://docs.vllm.ai/en/latest/serving/online_serving/)
-and [vllm bench serve](https://docs.vllm.ai/en/latest/cli/bench/serve/). Control cache
-and warmup settings before interpreting throughput/latency. The
+The local sweep can now collect one-second GPU samples and before/after vLLM
+Prometheus snapshots. Next, compare equivalent prompts and concurrency against
+[vLLM 0.32.0 bench serve](https://docs.vllm.ai/en/v0.32.0/cli/bench/serve/),
+then add token-aligned timing. Control cache and warmup settings before
+interpreting throughput/latency. The
 [SSE standard](https://html.spec.whatwg.org/multipage/server-sent-events.html#event-stream-interpretation)
-guides framing; it does not establish token boundaries. No real open-weight or
-GPU measurements were performed for this implementation.
+guides framing; it does not establish token boundaries. Real local inference
+has been exercised on owner-provided hardware; no benchmark comparison or
+GPU-telemetry analysis is yet recorded in the repository.

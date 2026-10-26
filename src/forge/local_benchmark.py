@@ -19,6 +19,7 @@ from forge.inference_runtime import run_native
 from forge.metrics import benchmark_metrics, latency_percentiles
 from forge.native_runtime import NativeRuntimeOptions
 from forge.suites import DEFAULT_SUITE, TaskSuite, load_suite, validate_suite
+from forge.telemetry import NvidiaSmiSampler, scrape_server_metrics
 
 
 @dataclass(frozen=True)
@@ -62,7 +63,8 @@ def endpoint_metrics(report: Dict[str, Any], elapsed: float) -> Dict[str, Any]:
 
 
 async def benchmark_local(config: LocalConfig, suite: TaskSuite = DEFAULT_SUITE,
-                          options: SweepOptions = SweepOptions(), *, allow_network: bool = False) -> Dict[str, Any]:
+                          options: SweepOptions = SweepOptions(), *, allow_network: bool = False,
+                          collect_telemetry: bool = False) -> Dict[str, Any]:
     if not isinstance(config, LocalConfig):
         raise ValueError("local benchmark requires schema-2 local endpoint configuration")
     validate_local_config(config)
@@ -83,16 +85,29 @@ async def benchmark_local(config: LocalConfig, suite: TaskSuite = DEFAULT_SUITE,
                                 for path in sorted(Path(__file__).parent.glob("*.py"))}}
     started = datetime.now(timezone.utc).isoformat()
     samples = []
-    for repeat in range(options.repeats):
-        offset = repeat % len(options.concurrencies)
-        order = options.concurrencies[offset:] + options.concurrencies[:offset]
-        for concurrency in order:
-            begin = perf_counter()
-            report = await run_native(config, suite, NativeRuntimeOptions(
-                concurrency=concurrency, max_attempts=1, request_timeout_seconds=options.request_timeout_seconds), True)
-            elapsed = perf_counter() - begin
-            samples.append({"repeat": repeat, "concurrency": concurrency,
-                            "metrics": endpoint_metrics(report, elapsed), "report": report})
+    sampler = NvidiaSmiSampler() if collect_telemetry else None
+    server_before = server_after = None
+    gpu_telemetry = None
+    if sampler is not None:
+        await sampler.start()
+    try:
+        if sampler is not None:
+            server_before = await scrape_server_metrics(config)
+        for repeat in range(options.repeats):
+            offset = repeat % len(options.concurrencies)
+            order = options.concurrencies[offset:] + options.concurrencies[:offset]
+            for concurrency in order:
+                begin = perf_counter()
+                report = await run_native(config, suite, NativeRuntimeOptions(
+                    concurrency=concurrency, max_attempts=1,
+                    request_timeout_seconds=options.request_timeout_seconds), True)
+                elapsed = perf_counter() - begin
+                samples.append({"repeat": repeat, "concurrency": concurrency,
+                                "metrics": endpoint_metrics(report, elapsed), "report": report})
+    finally:
+        if sampler is not None:
+            gpu_telemetry = await sampler.close()
+            server_after = await scrape_server_metrics(config)
     return {"schema_version": 1, "kind": "local-inference-benchmark", "measurement_kind": "endpoint",
             "started_at": started, "client": client, "config": config.to_dict(), "sweep": asdict(options),
             "suite_sha256": suite.digest, "provenance_source": "operator_declared",
@@ -100,7 +115,9 @@ async def benchmark_local(config: LocalConfig, suite: TaskSuite = DEFAULT_SUITE,
             "generation": {"seed": 0, "temperature": 0, "max_tokens": config.max_tokens, "stream": config.stream},
             "policy": {"max_attempts": 1, "rpm": None, "tpm": None, "breaker": False,
                        "warmup_requests": 0, "connection_scope": "new_session_per_sample", "sample_order": "rotated"},
-            "planned_requests": calls, "gpu_telemetry": None, "samples": samples}
+            "planned_requests": calls, "gpu_telemetry": gpu_telemetry,
+            "server_metrics": ({"before": server_before, "after": server_after}
+                               if collect_telemetry else None), "samples": samples}
 
 
 def main() -> int:
@@ -112,6 +129,8 @@ def main() -> int:
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--request-timeout", type=float, default=30)
     parser.add_argument("--allow-network", action="store_true", help="connect to the configured existing local server")
+    parser.add_argument("--collect-telemetry", action="store_true",
+                        help="sample nvidia-smi and scrape optional local vLLM metrics")
     args = parser.parse_args()
     try:
         if args.output.exists() or not args.output.parent.is_dir():
@@ -119,9 +138,11 @@ def main() -> int:
         options = SweepOptions(tuple(args.concurrency), args.repeats, args.request_timeout)
         config = load_config(args.config)
         suite = load_suite(args.tasks) if args.tasks is not None else DEFAULT_SUITE
-        result = asyncio.run(benchmark_local(config, suite, options, allow_network=args.allow_network))
+        result = asyncio.run(benchmark_local(config, suite, options, allow_network=args.allow_network,
+                                             collect_telemetry=args.collect_telemetry))
         write_json(args.output, result)
-        print("Saved {} endpoint samples to {} (GPU telemetry not collected)".format(len(result["samples"]), args.output))
+        telemetry = "with telemetry" if args.collect_telemetry else "without telemetry"
+        print("Saved {} endpoint samples to {} ({})".format(len(result["samples"]), args.output, telemetry))
         return 0
     except (OSError, ValueError) as exc:
         print("forge local benchmark: " + str(exc), file=sys.stderr)

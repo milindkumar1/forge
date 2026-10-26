@@ -64,6 +64,7 @@ class LocalSweepTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["measurement_kind"], "endpoint")
             self.assertFalse(result["server_revision_verified"])
             self.assertIsNone(result["gpu_telemetry"])
+            self.assertIsNone(result["server_metrics"])
             self.assertEqual([s["concurrency"] for s in result["samples"]], [1, 2, 2, 1])
             self.assertIn("streaming.py", result["client"]["source_sha256"])
             with tempfile.TemporaryDirectory() as directory:
@@ -75,6 +76,56 @@ class LocalSweepTests(unittest.IsolatedAsyncioTestCase):
                     path = Path(directory) / str(index)
                     write_json(path, sample["report"])
                     self.assertEqual(load_report(path)["summary"]["passed"], 6)
+
+    async def test_opt_in_telemetry_is_bounded_to_sweep_and_serialized(self):
+        class Sampler:
+            async def start(self):
+                self.started = True
+
+            async def close(self):
+                return {"available": True, "reason": None, "sample_interval_seconds": 1,
+                        "samples": [{"device_index": 0, "gpu_utilization_percent": 42}]}
+
+        snapshots = [{"available": True, "reason": None, "samples": {"vllm:request_success": []}},
+                     {"available": True, "reason": None, "samples": {"vllm:request_success": [
+                         {"labels": "model_name=fixture", "value": 6}]}}]
+        async def scrape(_config):
+            return snapshots.pop(0)
+
+        async with LocalChatFixture() as fixture:
+            with patch("forge.local_benchmark.NvidiaSmiSampler", Sampler), \
+                    patch("forge.local_benchmark.scrape_server_metrics", side_effect=scrape):
+                result = await benchmark_local(fixture.config(stream=True), options=SweepOptions((1,), 1),
+                                                allow_network=True, collect_telemetry=True)
+        self.assertEqual(result["gpu_telemetry"]["samples"][0]["gpu_utilization_percent"], 42)
+        self.assertEqual(result["server_metrics"]["before"]["available"], True)
+        self.assertEqual(result["server_metrics"]["after"]["samples"]["vllm:request_success"][0]["value"], 6)
+        self.assertEqual(len(fixture.requests), 6)
+
+    async def test_telemetry_process_closes_when_sweep_fails(self):
+        class Sampler:
+            closed = False
+
+            async def start(self):
+                pass
+
+            async def close(self):
+                self.closed = True
+                return {"available": False, "reason": "test", "samples": []}
+
+        sampler = Sampler()
+        async def fail_run(*_args, **_kwargs):
+            raise RuntimeError("fixture failure")
+        async def scrape(_config):
+            return {"available": False, "reason": "fixture", "samples": {}}
+
+        with patch("forge.local_benchmark.NvidiaSmiSampler", return_value=sampler), \
+                patch("forge.local_benchmark.scrape_server_metrics", side_effect=scrape), \
+                patch("forge.local_benchmark.run_native", side_effect=fail_run):
+            with self.assertRaisesRegex(RuntimeError, "fixture failure"):
+                await benchmark_local(config(), options=SweepOptions((1,), 1), allow_network=True,
+                                      collect_telemetry=True)
+        self.assertTrue(sampler.closed)
 
     async def test_invalid_config_suite_size_or_consent_prevents_dispatch(self):
         from forge.generation import generate_suite

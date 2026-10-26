@@ -1,5 +1,40 @@
 # Forge progress
 
+## Owner-run local GPU baseline (2026-10-26)
+
+On the owner's Windows PC via WSL2, vLLM 0.32.0 served
+`Qwen/Qwen2.5-Coder-1.5B-Instruct` at checkpoint/tokenizer revision
+`2e1fd397ee46e1388853d2af2c993145b0f1098a`, Apache-2.0, bfloat16. Hardware:
+RTX 5070 Ti (16,303 MiB), Windows driver 610.88, 31 GB system RAM. Launch
+settings included max model length 4096, max sequences 8, GPU memory utilization
+0.70, and `--enforce-eager`. FlashAttention 2 was selected. FlashInfer was
+unavailable but not required for startup. The model endpoint returned a valid
+chat completion with provider-reported token usage.
+
+Forge fixture validation accepted 6/6 tasks and caught 6/6 known mutations. A
+real local model evaluation passed 4/6 tasks with zero provider errors. The
+subsequent endpoint sweep completed 54 requests (six tasks, concurrency 1/2/4,
+three repeats each), again 4/6 per sample with zero provider errors and retries.
+Owner-reported median completed-task throughput was 12.667, 25.186, and 41.234
+tasks/s at concurrency 1, 2, and 4. Each sample contains only six tasks, so its
+nearest-rank p95/p99 equal its maximum and are weak tail estimates. The sweep
+artifact remains on the PC at `~/forge/qwen-gpu-sweep.json`; it is not committed.
+This initial run did not collect GPU/server telemetry and is not a comparison
+against vLLM's benchmark client or an optimized runtime baseline.
+
+## Optional telemetry increment (2026-10-26)
+
+The local sweep accepts `--collect-telemetry` to sample fixed-query
+`nvidia-smi` output once per second and capture selected vLLM Prometheus samples
+before and after the sweep. Collection is best-effort: unavailable utilities,
+metrics, or fields are recorded as unavailable; subprocess lifetime, row count,
+metrics body size, and scrape deadline are bounded. Metrics labels are preserved
+and histogram buckets/counters remain snapshots, not fabricated per-request
+timings. Default sweeps remain unchanged and emit null telemetry. The full suite
+passes 154 tests, including offline parser, option, serialization, and cleanup
+tests. This Mac run did not access the owner's Windows GPU or exercise live vLLM
+telemetry.
+
 ## Local inference increment (2026-10-26)
 
 Added schema-2 local endpoint configuration with operator-declared model,
@@ -151,25 +186,16 @@ generation; `ed69fbe` tool fixture/replay; `476bc67` bounded thread runtime;
 `cdb7e5c` latency/error/retry benchmarks. Earlier synthetic-delay results remain
 in Git history; they were not model/GPU performance claims.
 
-## Next milestone: local open-weight inference and GPU baseline
+## Next milestone: correlate Forge and serving-engine measurements
 
-Implement an explicitly configured OpenAI-compatible local endpoint adapter for
-an existing vLLM server, using offline HTTP/SSE fixtures first. Then:
-
-1. Record checkpoint revision/license, tokenizer/chat template, dtype, runtime
-   version, launch arguments, GPU/driver/CUDA details, and task/prompt digests.
-2. Capture streamed first-token and per-token timing, exact token counts, errors,
-   cancellation, and end-to-end latency with shared resource controls disabled
-   or reported explicitly during capacity sweeps.
-3. Sweep concurrency and prompt/output lengths; compare Forge measurements with
-   `vllm bench serve` under the same checkpoint/workload. Report token throughput,
-   TTFT, inter-token latency, p50/p95/p99, GPU memory/utilization, and raw samples.
-4. Only after profiling, choose a measured optimization (batching/cache/memory
-   configuration). Add C++/Rust only if profiling identifies a justified benefit.
-
-The [vLLM server](https://docs.vllm.ai/en/latest/serving/online_serving/) and
-[benchmark CLI](https://docs.vllm.ai/en/latest/cli/bench/serve/) provide integration
-and comparison points. [PagedAttention](https://arxiv.org/abs/2309.06180) motivates
-studying KV-cache memory and batching; its published results are not Forge
-results. This milestone is not implemented. Use existing authorized hardware;
-paid GPU provisioning/model-service calls still require explicit approval.
+The local adapter and first real model sweep are complete. Optional one-second
+`nvidia-smi` sampling and before/after vLLM Prometheus snapshots are implemented
+in the local sweep through `--collect-telemetry`. Next, rerun the pinned
+checkpoint with telemetry, then compare the same prompts and concurrency against
+[vLLM 0.32.0 bench serve](https://docs.vllm.ai/en/v0.32.0/cli/bench/serve/).
+Add token-aligned timing and control cache/warmup settings before interpreting
+throughput or latency. The [SSE standard](https://html.spec.whatwg.org/multipage/server-sent-events.html#event-stream-interpretation)
+guides framing; it does not establish token boundaries. Hardware details and
+server metadata remain operator-supplied, not independently attested. Use
+existing authorized hardware; paid GPU provisioning/model-service calls still
+require explicit approval.
