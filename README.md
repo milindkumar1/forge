@@ -112,8 +112,8 @@ non-text responses, and wrong answers do not retry. Retried requests can incur
 additional charges, including after an ambiguous transport failure. Network
 access still requires explicit `--allow-network`; no live calls were used here.
 This compatibility runner has no server-directed delay or jitter; the native
-runner below adds both. Neither runner provides a global rate limiter or request
-deduplication.
+runner below adds both. Provider-wide admission controls are available separately
+on the native runner. Request deduplication is not implemented.
 
 Schema-1 reports add `runtime` settings, total attempts, peak submitted requests,
 elapsed time, and completed tasks/second. Per-task evidence adds initial queue
@@ -173,13 +173,40 @@ seed is local to each task/attempt, so the sampled delay is independent of
 completion order. Seeds reproduce sampled delays, not network timings or the
 set of overloaded tasks. A server wait beyond `--max-retry-after` (default 300,
 allowed (0, 3600]) produces `retry_after_limit`; the scheduler never shortens the
-server minimum into an early retry. Backoff is per request; it does not pause all
-fresh requests globally after a 429. Attempts remain bounded to 1-5, default 1.
+server minimum into an early retry. Without coordination, backoff is per request
+and does not pause fresh requests globally after a 429. Attempts remain bounded
+to 1-5, default 1.
 
-Native reports use runtime kind `native-async-v1` within report schema 1. They
+Uncoordinated native reports use runtime kind `native-async-v1` within report
+schema 1. They
 record timeout flags, retry floors/delays, termination reasons, peak active and
 pending counts, total attempts, executed retries, and refused retries. Saved
 runtime evidence is validated on load; it is not an authentication mechanism.
+
+## Shared provider admission and failure controls
+
+Enable coordination with `--coordinate` or a quota/failure setting. These require
+`--native-async`; existing synchronous, thread, and native paths remain compatible.
+With the default mock config this stays offline:
+
+```sh
+.venv/bin/forge run --native-async --concurrency 4 --requests-per-minute 60 \
+  --tokens-per-minute 10000 --tokens-per-request 512 --retries-per-minute 8 \
+  --max-attempts 3 --output coordinated-results.json
+```
+
+Shared rolling RPM/TPM budgets are checked before allocating an active request
+slot. Every dispatched retry charges capacity again. Token reservations reconcile
+optional reported usage; failures/cancellations retain unknown usage. The default
+reservation is an estimate, not model tokenization. Provider-wide Retry-After
+cooldowns use monotonic scheduling. A bounded retry budget and circuit breaker
+limit sustained failures; FIFO tickets preserve fairness across shared runs.
+
+Python callers can share a `ProviderCoordinator` across `evaluate_native()` calls
+on one event loop for the same quota scope. Coordinated runtime reports use
+`native-async-v2`, with explicit admission rejection, usage, wait, and queue data.
+See [provider admission](docs/provider-admission.md) for settings, accounting,
+breaker recovery, scope, and limitations.
 
 ## Runtime benchmarks
 
@@ -220,6 +247,24 @@ run reports. It measures remote inference, routing, networking, and local overhe
 together; it cannot isolate GPU performance. Outputs are tagged `synthetic` or
 `real_api` and cannot mix modes. No real API measurements were run for this change.
 Local synthetic results and next steps are in [PROGRESS.md](PROGRESS.md).
+
+Compare admission behavior under a **simulated** provider quota:
+
+```sh
+.venv/bin/python benchmarks/runtime.py --mode limits --output /tmp/forge-limits-clean.json
+.venv/bin/python benchmarks/runtime.py --mode limits --scenario transient --output /tmp/forge-limits-transient.json
+.venv/bin/python benchmarks/runtime.py --mode limits --scenario outage --output /tmp/forge-limits-outage.json
+```
+
+Defaults: 24 tasks, three repetitions, 4 RPM, 12 TPM, three exact synthetic tokens
+per accepted request, instantaneous service, and time scale 600 (a simulated
+minute takes 0.1 real seconds). Modes compare equal concurrency and per-task
+attempt bounds. Artifacts are tagged `synthetic`, with metrics in **simulated
+seconds** and real wall duration recorded separately. They report admission
+p50/p95/p99, peak/mean ready-queue depth, admission/provider rejections, retry
+counts, and completed/successful throughput. These are not model/GPU/HTTP
+performance measurements. See [benchmark semantics](docs/provider-admission.md#synthetic-limit-experiment)
+and [measured observations](PROGRESS.md).
 
 ## Run a bounded tool-use episode
 
@@ -379,8 +424,9 @@ pass rate is not research evidence. LLM-generated tests, sandboxed coding
 episodes, independent held-out datasets, training, distributed scheduling, and a website
 are not implemented.
 
-The next runtime step is provider-wide rate-limit coordination and a bounded
-multi-episode trajectory runner before distributed workers or training.
+The next milestone is an OpenAI-compatible local vLLM adapter with pinned
+open-weight inference, streaming token timings, concurrency sweeps, and GPU
+telemetry when hardware is available. Acceptance criteria are in [PROGRESS.md](PROGRESS.md).
 The tool-use track also needs a second fixture to test its episode contract.
 See [the architecture note](docs/architecture.md) and
 [the project brief](project_brief.md).

@@ -97,7 +97,7 @@ def synthetic_experiment(count: int, repeats: int, delay: float, transient_every
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--mode", choices=("synthetic", "api"), default="synthetic")
+    parser.add_argument("--mode", choices=("synthetic", "api", "limits"), default="synthetic")
     parser.add_argument("--count", type=int, default=24)
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--delay", type=float, default=0.01, help="synthetic only")
@@ -107,6 +107,13 @@ def main() -> None:
     parser.add_argument("--concurrency", type=int, default=4, help="API mode")
     parser.add_argument("--max-attempts", type=int, default=1, help="API mode")
     parser.add_argument("--request-timeout", type=float, default=30, help="API mode")
+    parser.add_argument("--simulated-rpm", type=int, default=4, help="limits mode: provider RPM")
+    parser.add_argument("--simulated-tpm", type=int, default=12, help="limits mode: provider TPM")
+    parser.add_argument("--simulated-tokens", type=int, default=3, help="limits mode: exact synthetic tokens per attempt")
+    parser.add_argument("--simulation-scale", type=float, default=600, help="limits mode: simulated seconds per real second")
+    parser.add_argument("--scenario", choices=("clean", "transient", "outage"), default="clean", help="limits mode")
+    parser.add_argument("--retry-budget", type=int, default=4, help="limits mode: retries per simulated minute")
+    parser.add_argument("--breaker-threshold", type=int, default=5, help="limits mode: consecutive provider failures")
     args = parser.parse_args()
     if not 1 <= args.repeats <= 100 or not 0 <= args.delay <= 1 or args.transient_every < 0:
         parser.error("repeats must be in [1, 100], delay finite in [0, 1], transient-every nonnegative")
@@ -114,7 +121,25 @@ def main() -> None:
         parser.error("output already exists")
     if not args.output.parent.is_dir():
         parser.error("output parent directory does not exist")
-    if args.mode == "synthetic":
+    limit_values = (args.simulated_rpm, args.simulated_tpm, args.simulated_tokens, args.simulation_scale,
+                    args.scenario, args.retry_budget, args.breaker_threshold)
+    if args.mode != "limits" and limit_values != (4, 12, 3, 600, "clean", 4, 5):
+        parser.error("simulated provider controls require --mode limits")
+    if args.mode == "limits":
+        if (args.allow_network or args.config is not None or args.transient_every or args.delay != 0.01
+                or args.max_attempts != 1 or args.request_timeout != 30):
+            parser.error("limits mode cannot mix API or synthetic I/O controls")
+        # Script execution places benchmarks/ on sys.path; module imports from
+        # tests use the namespace package. Support both without modifying sys.path.
+        if __package__:
+            from .admission import limits_experiment
+        else:
+            from admission import limits_experiment
+        result = asyncio.run(limits_experiment(count=args.count, repeats=args.repeats,
+            rpm=args.simulated_rpm, tpm=args.simulated_tpm, tokens=args.simulated_tokens,
+            scale=args.simulation_scale, scenario=args.scenario, concurrency=args.concurrency,
+            retries_per_minute=args.retry_budget, failure_threshold=args.breaker_threshold))
+    elif args.mode == "synthetic":
         if args.allow_network or args.config is not None:
             parser.error("network/config require --mode api; synthetic results never contain API measurements")
         if args.concurrency != 4 or args.max_attempts != 1 or args.request_timeout != 30:

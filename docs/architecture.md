@@ -188,8 +188,12 @@ full jitter, not multiplicative jitter around a fixed delay. Numeric and HTTP-da
 Retry-After values establish a minimum wait. Delays exceeding policy terminate
 explicitly instead of being capped downward. Pending-queue overflow sheds the
 retry as a recorded task error. This sacrifices recovery under overload in
-exchange for bounded memory and retry pressure. Fresh requests are not globally
-paused after a 429; provider-wide rate coordination is future work.
+exchange for bounded memory and retry pressure. Without an explicit coordinator,
+fresh requests are not globally paused after a 429. The optional
+[provider admission layer](provider-admission.md) adds shared RPM/TPM quotas,
+provider-wide cooldown, aggregate retry budgets, and a circuit breaker before
+active request allocation. Its FIFO tickets can be shared across runs on one
+event loop. Coordinated evidence uses native runtime v2; native v1 remains readable.
 
 The established protocol rule comes from [RFC 9110 Retry-After](https://www.rfc-editor.org/rfc/rfc9110.html#name-retry-after).
 The client pooling/lifecycle follows [aiohttp documentation](https://docs.aiohttp.org/en/stable/client_quickstart.html#make-a-request).

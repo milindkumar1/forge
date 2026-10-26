@@ -1,170 +1,127 @@
 # Forge progress
 
-## Provider coordination increment (2026-10-25)
+## Current state (2026-10-25)
 
-Added a reusable, event-loop-local `ProviderCoordinator`: rolling 60-second RPM
-and TPM admission, FIFO waiters, provider-wide monotonic cooldown, a rolling
-retry budget, and closed/open/single-probe half-open circuit states. Reservations
-include every dispatched attempt. Reported usage reconciles token charges;
-unknown/failed/cancelled usage keeps the reservation, and underestimates become
-debt. In-flight reservations do not expire; settled token charges expire 60
-seconds after completion. The byte-based default reservation is an estimate,
-not exact tokenization. Native HTTP exposes optional usage metadata while
-preserving `acomplete() -> str` and the synchronous API.
+Working offline evaluation CLI, validated/versioned development tasks, seeded
+generation, bounded tool fixture, synchronous and native asynchronous providers,
+fair concurrent scheduling, retries, request deadlines, and shared provider
+admission controls. Synchronous/thread/native v1 behavior and historical reports
+remain supported; coordination is opt-in. No paid API calls, model/GPU benchmark,
+training, or distributed execution was performed or claimed.
 
-Tests cover bursts, exact expiry, FIFO token fairness, cancellation wakeups,
-retry budget exhaustion, usage debt, shared cooldown, and breaker recovery.
-`f73abec`: 113 tests passed before the coordinator commit.
+## Latest increments
 
-## Coordinated runtime increment (2026-10-25)
+- `f73abec`: shared provider coordinator and optional HTTP token usage metadata;
+  113 tests passed. Rolling RPM/TPM, FIFO tickets, monotonic provider cooldown,
+  shared retry budget, and closed/open/single-probe half-open breaker.
+- `c524001`: coordinated native admission, CLI controls, native runtime v2 evidence,
+  and shared-run/virtual-clock tests; 125 tests passed. Admission waits do not
+  occupy active request slots; retries reacquire all applicable budgets.
+- `f374a8e`: preserve readiness-based admission deadlines and count quota-blocked
+  retries against pending capacity; 130 tests passed.
+- Current benchmark increment: admission p50/p95/p99, mean/peak ready backlog,
+  admission/provider rejection counts, and completed/successful throughput under
+  accelerated monotonic simulated provider limits. Readiness-based admission
+  deadlines include time spent waiting for active request slots.
 
-The native scheduler now accepts a shared coordinator explicitly. CLI controls
-are opt-in (`--coordinate` or quota/failure flags with `--native-async`); existing
-sync/native/thread callers remain compatible. Waiting tickets do not consume
-active request slots. Local fresh/retry alternation and cross-run FIFO admission
-preserve fairness; each retry reacquires request/token quotas and retry budget.
-Cancelled admissions remove tickets; unknown in-flight usage is retained.
+Final suite: `.venv/bin/python -m unittest discover -s tests -q` — 130 tests
+passed, 0 failures/errors with the HTTP extra installed. Loopback HTTP integration
+requires permission to bind a temporary local socket in restricted sandboxes;
+all other provider fixtures stay offline. All 18 embedded benchmark reports
+passed report-reader validation. `git diff --check` passed.
+The installed console entrypoint passed an offline coordinated init → run →
+report smoke check (6/6; all six reservations charged, no network calls).
 
-`native-async-v2` runtime evidence distinguishes zero-attempt admission rejections
-from provider failures and records per-attempt reservation/usage/admission data.
-Queue mean is the integral of ready-to-admit task backlog divided by elapsed
-time; initial task waiting and retry waiting count, backoff before readiness does
-not. Older report contracts still load. Scope counters are cumulative when a
-coordinator is shared; per-run metrics come from that run's attempts.
+## Technical decisions and open limits
 
-Virtual-clock tests verify shared-run fairness, RPM/TPM windows, 429 cooldown of
-fresh calls and retries, aggregate retry caps, breaker shedding, admission expiry,
-and cancellation. Next: simulated-limit benchmark and documentation.
+- A coordinator is explicitly shared for one account/model quota scope on one
+  event loop. The CLI owns one per invocation. No cross-process quota service.
+- RPM counts dispatches in rolling 60-second windows, including retries and
+  uncertain/cancelled requests. Initial bursts are allowed. No request slot is
+  consumed before permission. FIFO admission avoids starvation by cheaper work,
+  but can leave capacity idle behind a large token reservation.
+- TPM reserves before dispatch; optional `usage.total_tokens` reconciles the
+  charge. Unknown usage retains the reservation. In-flight reservations do not
+  expire; settled charges expire 60 seconds after completion. Underestimates
+  become debt. Default bytes + chat/output allowance is an estimate, not exact
+  tokenization or a guaranteed upper bound. Model-specific tokenization is open.
+- Global cooldown honors Retry-After without shortening server minima. Shared
+  retries per rolling minute, per-task attempts, and pending-retry capacity bound
+  storms. Circuit thresholds count completed provider errors; already active
+  requests may finish after opening. Probe cancellation reopens safely.
+- Native runtime v2 records unsent rejections with zero attempts, admission waits,
+  reservation/reported/charged tokens, and cumulative scope snapshots. Per-run
+  counters come from local attempts. Async cancellation remains cooperative.
+- See [provider admission](docs/provider-admission.md) for policy, configuration,
+  primary references, and benchmark semantics. Durable restart and multi-episode
+  trajectories remain open; public fixtures are not held-out capability evidence.
 
-## Native HTTP increment (2026-10-25)
+## Synthetic provider-limit observations
 
-Added optional `http` extra (aiohttp), a separate `AsyncProvider.acomplete()`
-protocol, and a context-managed native OpenRouter session. The synchronous
-`complete()` API is unchanged. A whole-request deadline covers pool acquisition,
-headers, and bounded body reading; cancellation propagates and closes responses.
-Transient exceptions carry parsed numeric/HTTP-date Retry-After delays. Redirects
-are disabled; credentials and response/error bodies stay out of error messages.
-Transport tests use fake responses and events, with no API calls or credentials.
-`python -m unittest discover -s tests -q`: 80 passed, 0 failures/errors.
-Transport committed as `f4ddb30`; scheduler follow-up completed below.
-
-## Native scheduler increment (2026-10-25)
-
-Added `--native-async` with separate active-request and pending-retry limits.
-One central timer heap holds delayed/ready retries; delays release request
-capacity. Admission alternates fresh work and due retries when both are ready.
-Full jitter uses a task/attempt-specific seed; Retry-After is a minimum delay.
-Overflow and excessive server waits terminate explicitly (`retry_queue_full`,
-`retry_after_limit`). This is per-request backoff, not a provider-wide rate limiter.
-Native runtime evidence is versioned independently; legacy reports still load.
-
-94 tests passed, 0 failures/errors, including a real loopback HTTP 429/retry
-exchange and stalled-body deadline with socket disconnect verification. The
-sandbox blocks binding loopback sockets; this suite ran with the required
-permission. No external services were contacted. Deterministic event/virtual
-clock tests cover storms, fairness, cancellation, deadlines, and both bounds.
-Scheduler committed as `4cfe3b6`; benchmark follow-up completed below.
-
-## Benchmark increment (2026-10-25)
-
-Benchmark schema 2 adds completed/successful throughput; nearest-rank p50/p95/p99
-attempt, task, and completion latency; final task error/failure rates; attempt
-error rate; retry counts and runtime peaks. Task latency excludes initial queue
-wait; completion latency includes it (unavailable on the sequential baseline).
-Synthetic and API modes produce separate tagged artifacts. API mode requires
-network opt-in, has no paid warmups or injected failures, and preserves full
-reports. No real API measurements were run.
-
-Reproduction (run these separately, not concurrently):
+Reproduce separately (new output paths required):
 
 ```sh
-.venv/bin/python benchmarks/runtime.py --output /tmp/forge-native-synthetic-isolated-20261025.json
-.venv/bin/python benchmarks/runtime.py --transient-every 3 --output /tmp/forge-native-retries-isolated-20261025.json
+.venv/bin/python benchmarks/runtime.py --mode limits --output /tmp/forge-limits-clean.json
+.venv/bin/python benchmarks/runtime.py --mode limits --scenario transient --output /tmp/forge-limits-transient.json
+.venv/bin/python benchmarks/runtime.py --mode limits --scenario outage --output /tmp/forge-limits-outage.json
 ```
 
-Python 3.9.6, macOS 15.0 arm64; 24 tasks, seed 42, three repetitions, 10 ms
-simulated wait. Native measurements use an async mock, not HTTP. The following
-are medians across repetitions; percentiles are medians of per-run percentiles.
+Python 3.9.6, macOS 15 arm64. Each experiment uses 24 seeded tasks, three
+repetitions, concurrency 4, three attempts/task, 4 RPM/12 TPM, and three exact
+synthetic tokens per accepted request. Time scale 600; service time is zero.
+Client retry budget is four per simulated minute; breaker threshold is five;
+admission deadline is 3600 simulated seconds. The simulated server charges only
+accepted requests; the coordinated client charges all dispatches conservatively.
+No real model, GPU, or HTTP-serving performance is measured.
 
-| Clean synthetic runner | Wall s | Completed tasks/s | Task p50 ms | p95 ms | p99 ms |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Sequential | 0.294130 | 81.60 | 12.57 | 12.82 | 12.84 |
-| Thread, concurrency 4 | 0.081677 | 293.84 | 12.62 | 13.71 | 13.89 |
-| Native, concurrency 4 | 0.075088 | 319.63 | 11.99 | 12.31 | 12.33 |
+Clean traffic results (medians; time/throughput use simulated seconds):
 
-All 360 clean task outcomes passed; errors/retries were zero. With first-attempt
-failure injection every third task, native concurrency 4 had median wall time
-0.095321 s, 251.78 completed tasks/s, task p50/p95/p99 11.94/23.86/23.87 ms,
-zero final task errors, 25% attempt errors, and eight executed retries per run.
-The sequential baseline had 33.33% final task errors and no retries. Concurrent
-modes use two attempts versus one for that baseline; these are recovery-policy
-observations, not equal-work speedups. No model/GPU performance inference is made.
-Raw JSON artifacts stay outside Git. HTTP integration was verified with aiohttp
-3.11.11 against a loopback fixture, not a paid API.
+| Runner | Passed | Calls | Server 429s | Admission p95 s | Mean ready queue | Completed tasks/s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Uncoordinated | 12/24 | 60 | 48 | 7.808 | 0.822 | 0.1912 |
+| Coordinated | 24/24 | 24 | 0 | 310.336 | 11.949 | 0.0771 |
 
-Final verification before the benchmark commit: 100 tests passed, 0 failures/errors,
-with the HTTP extra installed; `git diff --check` passed. The installed console
-entrypoint also passed an offline init → native run → report smoke check (6/6).
-Primary protocol and
-client references, semantics, and tradeoffs are in `docs/architecture.md`.
+Successful throughput was 0.0956 versus 0.0771 tasks/s over different finite
+completion horizons. Rapid failures inflate the baseline's completed throughput;
+this is a request-cost/recovery tradeoff, not a measured speedup. Ready queues
+exclude backoff, so baseline retries waiting on server timers do not enter that
+queue statistic. Peak initial ready backlog was 24 in both modes.
 
-## Completed milestones
+With first-accepted-attempt transient failures, coordinated runs passed 24/24
+using 48 calls and 24 retries, with no server 429s. Baseline runs used 72 calls,
+received 60 server 429s, and passed 0-3 tasks depending on scheduling. During
+sustained outage, the coordinated breaker bounded calls to eight (two retries)
+with 24 admission rejections; baseline used 72 calls and received 60 server 429s.
+All three repetitions had those call/rejection counts. Raw generated artifacts
+remain in `/tmp/forge-provider-limits-*-final-20261025.json`, outside Git.
 
-- `67417cf`: installable offline evaluation CLI, deterministic fixtures, mock and
-  gated OpenRouter adapters, JSON reports, and tests.
-- `b9c056a`: versioned task suites, trusted reference/mutation validation, suite
-  snapshots and digests, and historical report compatibility.
-- `66c188f`: seeded, bounded development-suite generation with provenance.
-- `ed69fbe`: bounded fixture-backed tool episodes and replay validation.
-- `476bc67`: opt-in bounded asynchronous text evaluation, transient failure
-  classification, bounded retries, ordered results, attempt/queue/runtime metrics,
-  report checks, and an offline sequential/concurrent benchmark. No new runtime
-  dependencies. Default sequential and tool paths remain supported.
+## Earlier working milestones
 
-## Thread compatibility runner decisions (476bc67)
+`67417cf` minimal CLI; `b9c056a` suite validation/provenance; `66c188f` seeded
+generation; `ed69fbe` tool fixture/replay; `476bc67` bounded thread runtime;
+`f4ddb30` native HTTP deadlines; `4cfe3b6` jitter/fair retry scheduling;
+`cdb7e5c` latency/error/retry benchmarks. Earlier synthetic-delay results remain
+in Git history; they were not model/GPU performance claims.
 
-- Use fixed coroutine workers plus a dedicated thread pool to adapt the existing
-  blocking provider boundary. Custom providers must be thread-safe. Both submitted
-  calls and coroutine count are bounded by concurrency (1-64).
-- Retry only explicitly transient errors; default one attempt, maximum five.
-  Backoff retains the rollout slot. No jitter, `Retry-After`, or rate limiter yet.
-  Retrying remote requests can duplicate billed work.
-- Cancellation/error cleanup stops admission and joins running threads. Cleanup
-  can block the event loop; provider socket timeouts are not hard run deadlines.
-  This compatibility runner has no partial reports, durable restart, or native
-  HTTP; the new native path above is separate. Neither path distributes work.
-- Public development fixtures remain plumbing checks. No sandboxed coding tasks,
-  independent held-out evaluation, trainable dataset, SFT/RL, vLLM, or GPU result.
+## Next milestone: local open-weight inference and GPU baseline
 
-## Verification and measured experiment (2026-10-25)
+Implement an explicitly configured OpenAI-compatible local endpoint adapter for
+an existing vLLM server, using offline HTTP/SSE fixtures first. Then:
 
-Baseline: 60 tests passed. Final `.venv/bin/python -m unittest discover -s tests -v`:
-73 tests passed, 0 failures/errors. `git diff --check` passed. Expanded suite covers concurrency overlap and bounds,
-out-of-order completion, retry recovery/exhaustion, sanitized failures, wrong and
-non-text answers, programming errors, cancellation cleanup, event-loop response,
-runtime report consistency, CLI preflight, and network gating.
+1. Record checkpoint revision/license, tokenizer/chat template, dtype, runtime
+   version, launch arguments, GPU/driver/CUDA details, and task/prompt digests.
+2. Capture streamed first-token and per-token timing, exact token counts, errors,
+   cancellation, and end-to-end latency with shared resource controls disabled
+   or reported explicitly during capacity sweeps.
+3. Sweep concurrency and prompt/output lengths; compare Forge measurements with
+   `vllm bench serve` under the same checkpoint/workload. Report token throughput,
+   TTFT, inter-token latency, p50/p95/p99, GPU memory/utilization, and raw samples.
+4. Only after profiling, choose a measured optimization (batching/cache/memory
+   configuration). Add C++/Rust only if profiling identifies a justified benefit.
 
-Command: `.venv/bin/python benchmarks/runtime.py --output /tmp/forge-runtime-benchmark-20261025.json`.
-Environment: Python 3.9.6, macOS 15.0, arm64. Seed 42, 24 tasks, 10 ms simulated
-blocking I/O per request, three repetitions, rotated run order, unmeasured warmups.
-All 216 measured task outcomes passed. Median end-to-end wall times:
-
-| Runner | Concurrency | Seconds |
-| --- | ---: | ---: |
-| Sequential baseline | 1 | 0.292913 |
-| Async thread bridge | 1 | 0.303324 |
-| Async thread bridge | 4 | 0.081162 |
-
-The measured baseline/concurrency-4 ratio is 3.61x for this synthetic delay
-workload. The concurrency-1 bridge costs overhead here. This does not measure
-model inference, GPU utilization, remote throughput, or distributed scaling.
-Raw JSON is a generated local artifact and is not committed; the harness records
-environment, suite digest, and every sample for reproduction.
-
-## Next recommended task
-
-Add provider-wide rate-limit coordination (fresh-request cooldown/token budget)
-with fairness and multi-run tests. Then reuse the native runtime for multiple
-tool episodes with trajectory provenance before training or distribution.
-Durable restart, a rollout-wide deadline, token accounting, and live API/GPU
-measurements remain open. The owner must explicitly authorize any paid run.
+The [vLLM server](https://docs.vllm.ai/en/latest/serving/online_serving/) and
+[benchmark CLI](https://docs.vllm.ai/en/latest/cli/bench/serve/) provide integration
+and comparison points. [PagedAttention](https://arxiv.org/abs/2309.06180) motivates
+studying KV-cache memory and batching; its published results are not Forge
+results. This milestone is not implemented. Use existing authorized hardware;
+paid GPU provisioning/model-service calls still require explicit approval.
