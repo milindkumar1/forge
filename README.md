@@ -204,6 +204,18 @@ Content deltas can bundle tokens; these arrival times are not exact inter-token
 latency. The generation contract fixes temperature and seed to zero and records
 the output token cap. Reproducibility still depends on the declared server/model.
 
+Sweep an existing endpoint with explicit consent:
+
+```sh
+.venv/bin/python benchmarks/local_inference.py --config local.json --allow-network \
+  --concurrency 1 2 4 --repeats 3 --output /tmp/forge-local-sweep.json
+```
+
+The harness records raw reports, client source hashes, usage coverage, first-content
+and inter-delta percentiles, and provider-reported output-token throughput. Missing
+usage and uncollected GPU telemetry remain null. It does not download models or
+launch a server. See [local measurement semantics](docs/local-inference.md).
+
 ## Shared provider admission and failure controls
 
 Enable coordination with `--coordinate` or a quota/failure setting. These require

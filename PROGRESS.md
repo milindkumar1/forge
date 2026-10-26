@@ -30,8 +30,23 @@ reports remain supported. Reservation estimates include the configured output
 cap and largest suite prompt. The example enables streaming with fixed seed 0
 and temperature 0. 144 tests passed, 0 failures/errors, including stream/report
 roundtrip, malformed/tampered evidence, bounded parsing, and cleanup tests.
-Next in this slice: endpoint concurrency sweep, reproducibility docs and smoke
-validation. No actual model/GPU measurements have been performed.
+`05aaebb`: streaming and evidence increment committed. No actual model/GPU
+measurements have been performed.
+
+## Endpoint sweep increment (2026-10-26)
+
+Added a library-backed local endpoint sweep with rotated concurrency order,
+explicit consent, bounded planned calls, no warmups/retries/quota throttles, raw
+evaluation reports, source hashes, and declared model/runtime provenance. Metrics
+include content-arrival percentiles, usage coverage and reported output-token
+throughput. Unknown usage and uncollected GPU telemetry are null. Session ownership
+now lives outside the CLI; existing imports and commands remain compatible.
+
+Final suite: 148 tests passed, 0 failures/errors. Sweep tests used a trusted
+loopback fixture, not model inference. See `docs/local-inference.md` and
+`benchmarks/local_inference.py`. The next hardware step remains server/GPU
+telemetry and token-aligned timing against a pinned vLLM checkpoint. The local
+adapter and measurement harness are implemented; actual GPU baselines are pending.
 
 ## Current state (2026-10-25)
 
