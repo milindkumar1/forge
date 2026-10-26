@@ -1,0 +1,13 @@
+{
+  "schema_version": 2,
+  "provider": "local",
+  "model": "replace-with-served-model-id",
+  "base_url": "http://127.0.0.1:8000/v1",
+  "model_revision": "replace-with-checkpoint-revision",
+  "tokenizer_revision": "replace-with-tokenizer-revision",
+  "model_license": "replace-with-model-license",
+  "dtype": "replace-with-server-dtype",
+  "server_version": "replace-with-pinned-vllm-version",
+  "max_tokens": 256,
+  "stream": false
+}

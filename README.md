@@ -183,6 +183,22 @@ record timeout flags, retry floors/delays, termination reasons, peak active and
 pending counts, total attempts, executed retries, and refused retries. Saved
 runtime evidence is validated on load; it is not an authentication mechanism.
 
+## Local inference endpoint
+
+Copy [the local config example](examples/local-vllm.json), fill its model/runtime
+provenance from your existing server, then run:
+
+```sh
+.venv/bin/forge run --native-async --config local.json --allow-network --output local-results.json
+```
+
+This connects only to an explicitly configured numeric loopback endpoint under
+`/v1`. It does not launch a server, download weights, or use an OpenRouter key.
+The example contains placeholders, not a measured model configuration. Declared
+revisions/license/dtype/runtime are operator provenance, not server attestation.
+Local runs use coordinated evidence to retain reported token usage; without
+explicit coordination settings they impose no RPM/TPM limits or circuit breaker.
+
 ## Shared provider admission and failure controls
 
 Enable coordination with `--coordinate` or a quota/failure setting. These require

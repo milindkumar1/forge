@@ -8,7 +8,7 @@ from time import perf_counter
 from typing import Any, Dict, List, Optional
 
 from forge import __version__
-from forge.config import Config
+from forge.config import Config, ProviderConfig
 from forge.providers import Provider, ProviderError
 from forge.suites import DEFAULT_SUITE, TaskSuite, Validation, parse_suite, validate_suite
 
@@ -45,7 +45,7 @@ def evaluate(config: Config, provider: Provider, suite: TaskSuite = DEFAULT_SUIT
     return build_report(config, suite, validation, started, results)
 
 
-def build_report(config: Config, suite: TaskSuite, validation: Validation,
+def build_report(config: ProviderConfig, suite: TaskSuite, validation: Validation,
                  started: str, results: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Shared evidence contract for sequential and concurrent text evaluations."""
     return {

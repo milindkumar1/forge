@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any, Dict, List, Optional, Tuple, cast
 
-from forge.config import Config
+from forge.config import Config, ProviderConfig
 from forge.admission import Clock, Permit, ProviderCoordinator, Ticket
 from forge.evaluation import build_report
 from forge.providers import AsyncProvider, Completion, ProviderError, ProviderRateLimitError, ProviderTimeoutError, RetryableProviderError
@@ -51,7 +51,7 @@ class _State:
     admission_seconds: float = 0.0
 
 
-async def evaluate_native(config: Config, provider: AsyncProvider, suite: TaskSuite = DEFAULT_SUITE,
+async def evaluate_native(config: ProviderConfig, provider: AsyncProvider, suite: TaskSuite = DEFAULT_SUITE,
                           options: NativeRuntimeOptions = NativeRuntimeOptions(), *,
                           coordinator: Optional[ProviderCoordinator] = None,
                           clock: Optional[Clock] = None) -> Dict[str, Any]:

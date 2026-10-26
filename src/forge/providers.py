@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Optional
 from typing import Protocol
 
-from forge.config import Config
+from forge.config import Config, ProviderConfig
 
 
 class ProviderError(Exception):
@@ -128,7 +128,9 @@ class OpenRouterProvider:
             raise ProviderError("OpenRouter request failed or returned an invalid response") from exc
 
 
-def make_provider(config: Config, *, allow_network: bool = False) -> Provider:
+def make_provider(config: ProviderConfig, *, allow_network: bool = False) -> Provider:
+    if config.provider == "local":
+        raise ValueError("local provider requires the native async runtime")
     if config.provider == "mock":
         return MockProvider(config.mock_mode)
     return OpenRouterProvider(config.model, allow_network=allow_network)

@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-from forge.config import Config, load_config, write_json
+from forge.config import Config, LocalConfig, ProviderConfig, load_config, write_json
 from forge.admission import AdmissionOptions, ProviderCoordinator
 from forge.evaluation import evaluate, load_report
 from forge.generation import generate_suite
@@ -17,18 +17,22 @@ from forge.suites import DEFAULT_SUITE, TaskSuite, load_suite, validate_suite
 from forge.tool_episode import evaluate_tool
 
 
-async def run_native(config: Config, suite: TaskSuite, options: NativeRuntimeOptions,
+async def run_native(config: ProviderConfig, suite: TaskSuite, options: NativeRuntimeOptions,
                      allow_network: bool, admission: Optional[AdmissionOptions] = None) -> dict:
     coordinator = ProviderCoordinator(admission) if admission is not None else None
     if config.provider == "mock":
         return await evaluate_native(config, AsyncMockProvider(config.mock_mode), suite, options, coordinator=coordinator)
     try:
-        from forge.async_http import AsyncOpenRouterProvider
+        from forge.async_http import AsyncLocalProvider, AsyncOpenRouterProvider
     except ImportError as exc:
         raise ValueError("native HTTP requires: pip install 'forge-evals[http]'") from exc
-    async with AsyncOpenRouterProvider(config.model, allow_network=allow_network,
-                                       request_timeout_seconds=options.request_timeout_seconds,
-                                       max_connections=options.concurrency) as provider:
+    settings = {"allow_network": allow_network, "request_timeout_seconds": options.request_timeout_seconds,
+                "max_connections": options.concurrency}
+    provider_instance = (AsyncLocalProvider(config, **settings) if isinstance(config, LocalConfig) else
+                         AsyncOpenRouterProvider(config.model, **settings))
+    if isinstance(config, LocalConfig) and coordinator is None:
+        coordinator = ProviderCoordinator(AdmissionOptions(failure_threshold=0))
+    async with provider_instance as provider:
         return await evaluate_native(config, provider, suite, options, coordinator=coordinator)
 
 
@@ -44,7 +48,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     run = commands.add_parser("run", help="evaluate a validated development suite")
     run.add_argument("--config", type=Path, default=Path("forge.json"))
     run.add_argument("--output", type=Path, default=Path("forge-results.json"))
-    run.add_argument("--allow-network", action="store_true", help="allow paid OpenRouter inference")
+    run.add_argument("--allow-network", action="store_true", help="allow configured inference connections (OpenRouter may incur costs)")
     run.add_argument("--tasks", type=Path, help="load a versioned JSON suite instead of built-in tasks")
     run.add_argument("--concurrency", type=int, help="use bounded async runner with 1-64 workers")
     run.add_argument("--max-attempts", type=int, default=1, help="attempts per task, 1-5; requires --concurrency")
@@ -111,6 +115,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             if args.output.exists():
                 raise ValueError("output already exists; choose a new --output path")
             config = load_config(args.config)
+            if isinstance(config, LocalConfig) and (args.command != "run" or not args.native_async):
+                raise ValueError("local provider requires forge run --native-async")
             if args.command == "run-tool":
                 result = evaluate_tool(config, make_provider(config, allow_network=args.allow_network))
             else:

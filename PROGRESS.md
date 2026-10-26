@@ -1,5 +1,21 @@
 # Forge progress
 
+## Local inference increment (2026-10-26)
+
+Added schema-2 local endpoint configuration with operator-declared model,
+checkpoint/tokenizer revisions, license, dtype, and server version. Native local
+JSON inference reuses pooled HTTP, deadlines, retry classification and provider
+coordination. Only numeric loopback URLs under `/v1` are accepted; connections
+require `--allow-network`. Local requests do not read/send OpenRouter credentials.
+Legacy configs and synchronous providers remain supported. Local runs retain
+reported usage through coordinated evidence, with quotas/breaker disabled by
+default (the retry budget remains bounded).
+
+136 tests passed, 0 failures/errors, including actual loopback evaluation and
+usage/report roundtrip. No model server, model download or GPU experiment was
+run. Next in this slice: bounded SSE parsing, content-arrival instrumentation,
+and a reproducible local endpoint concurrency sweep.
+
 ## Current state (2026-10-25)
 
 Working offline evaluation CLI, validated/versioned development tasks, seeded

@@ -7,7 +7,10 @@ import os
 import time
 from datetime import timezone
 from email.utils import parsedate_to_datetime
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from forge.config import LocalConfig
 
 try:
     import aiohttp
@@ -42,26 +45,20 @@ def parse_retry_after(value: Optional[str], *, now: Optional[float] = None) -> f
         return 0.0
 
 
-class AsyncOpenRouterProvider:
-    def __init__(self, model: str, *, allow_network: bool = False,
+class _AsyncChatProvider:
+    def __init__(self, model: str, *,
                  request_timeout_seconds: float = 30.0, max_connections: int = 4) -> None:
-        if not allow_network:
-            raise ValueError("OpenRouter requires explicit --allow-network (may incur API costs)")
-        key = os.environ.get("OPENROUTER_API_KEY", "").strip()
-        if not key:
-            raise ValueError("set OPENROUTER_API_KEY before using OpenRouter")
         if (type(request_timeout_seconds) not in (int, float)
                 or not math.isfinite(request_timeout_seconds) or not 0 < request_timeout_seconds <= 3600):
             raise ValueError("request timeout must be finite in (0, 3600]")
         if type(max_connections) is not int or not 1 <= max_connections <= 64:
             raise ValueError("max_connections must be an integer in [1, 64]")
         self.model = model
-        self._key = key
         self.request_timeout_seconds = request_timeout_seconds
         self.max_connections = max_connections
         self._session: Optional[aiohttp.ClientSession] = None
 
-    async def __aenter__(self) -> "AsyncOpenRouterProvider":
+    async def __aenter__(self) -> "_AsyncChatProvider":
         if self._session is not None:
             raise ValueError("provider session already open")
         self._session = aiohttp.ClientSession(
@@ -94,10 +91,7 @@ class AsyncOpenRouterProvider:
     async def _request(self, prompt: str) -> Completion:
         assert self._session is not None
         async with self._session.post(
-            ENDPOINT,
-            json={"model": self.model, "messages": [{"role": "user", "content": prompt}],
-                  "temperature": 0, "max_tokens": 256},
-            headers={"Authorization": "Bearer " + self._key}, allow_redirects=False,
+            self.endpoint(), json=self.payload(prompt), headers=self.headers(), allow_redirects=False,
         ) as response:
             if response.status in (429, 500, 502, 503, 504):
                 error_type = ProviderRateLimitError if response.status == 429 else RetryableProviderError
@@ -117,3 +111,51 @@ class AsyncOpenRouterProvider:
             usage = payload.get("usage")
             total = usage.get("total_tokens") if isinstance(usage, dict) else None
             return Completion(answer, total)
+
+    def endpoint(self) -> str:
+        raise NotImplementedError
+
+    def headers(self) -> dict:
+        return {}
+
+    def payload(self, prompt: str) -> dict:
+        return {"model": self.model, "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0, "max_tokens": 256}
+
+
+class AsyncOpenRouterProvider(_AsyncChatProvider):
+    def __init__(self, model: str, *, allow_network: bool = False,
+                 request_timeout_seconds: float = 30.0, max_connections: int = 4) -> None:
+        if not allow_network:
+            raise ValueError("OpenRouter requires explicit --allow-network (may incur API costs)")
+        key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+        if not key:
+            raise ValueError("set OPENROUTER_API_KEY before using OpenRouter")
+        super().__init__(model, request_timeout_seconds=request_timeout_seconds, max_connections=max_connections)
+        self._key = key
+
+    def endpoint(self) -> str:
+        return ENDPOINT
+
+    def headers(self) -> dict:
+        return {"Authorization": "Bearer " + self._key}
+
+
+class AsyncLocalProvider(_AsyncChatProvider):
+    def __init__(self, config: "LocalConfig", *, allow_network: bool = False,
+                 request_timeout_seconds: float = 30.0, max_connections: int = 4) -> None:
+        from forge.config import validate_local_config
+
+        validate_local_config(config)
+        if not allow_network:
+            raise ValueError("local inference requires explicit --allow-network")
+        if config.stream:
+            raise ValueError("streaming support is not enabled yet")
+        super().__init__(config.model, request_timeout_seconds=request_timeout_seconds, max_connections=max_connections)
+        self.config = config
+
+    def endpoint(self) -> str:
+        return self.config.base_url.rstrip("/") + "/chat/completions"
+
+    def payload(self, prompt: str) -> dict:
+        return dict(super().payload(prompt), max_tokens=self.config.max_tokens)
